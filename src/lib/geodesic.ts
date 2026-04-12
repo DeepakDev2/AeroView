@@ -176,7 +176,14 @@ export function greatCircleWaypoints(
           )
         : { lat: destination.lat, lon: destination.lon };
 
-    const bearing = bearingDeg(lat, lon, nextPt.lat, nextPt.lon);
+    // Apply the same antimeridian correction to nextPt.lon so the Δλ inside
+    // bearingDeg stays within (-180, 180] — without this, Pacific routes that
+    // adjusted `lon` by ±360 would compute a bearing ~360° off.
+    let nextLon = nextPt.lon;
+    if (nextLon - lon > 180)  nextLon -= 360;
+    if (nextLon - lon < -180) nextLon += 360;
+
+    const bearing = bearingDeg(lat, lon, nextPt.lat, nextLon);
 
     // UTC time at this waypoint
     const elapsedSeconds = (cumulativeKm / CRUISE_SPEED_KMH) * 3600;

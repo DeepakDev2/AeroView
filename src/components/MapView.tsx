@@ -107,9 +107,12 @@ export default function MapView({
   destination,
   verdict,
 }: MapViewProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const mapRef       = useRef<mapboxgl.Map | null>(null);
-  const planeRef     = useRef<mapboxgl.Marker | null>(null);
+  const containerRef       = useRef<HTMLDivElement>(null);
+  const mapRef             = useRef<mapboxgl.Map | null>(null);
+  const planeRef           = useRef<mapboxgl.Marker | null>(null);
+  // Ref so the map 'rotate' event handler can read the latest index without
+  // a stale closure (the handler is registered once inside the init useEffect)
+  const currentIndexRef    = useRef(0);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isPlaying,    setIsPlaying]    = useState(false);
   const [mapReady,     setMapReady]     = useState(false);
@@ -294,6 +297,14 @@ export default function MapView({
       waypoints.forEach((wp) => bounds.extend([wp.lon, wp.lat] as [number, number]));
       map.fitBounds(bounds, { padding: { top: 60, bottom: 80, left: 60, right: 60 } });
 
+      // Keep plane aligned when user rotates the map manually
+      map.on('rotate', () => {
+        if (!planeRef.current) return;
+        const wp    = waypoints[currentIndexRef.current];
+        const inner = planeRef.current.getElement().firstElementChild as HTMLElement | null;
+        if (inner) inner.style.transform = `rotate(${wp.bearingDeg - map.getBearing()}deg)`;
+      });
+
       setMapReady(true);
     });
 
@@ -312,12 +323,17 @@ export default function MapView({
     const map = mapRef.current;
     const wp  = waypoints[currentIndex];
 
+    // Keep ref in sync so the map 'rotate' handler always has the latest index
+    currentIndexRef.current = currentIndex;
+
     // Move plane: setLngLat → Mapbox updates planeOuter.style.transform (position)
     planeRef.current.setLngLat([wp.lon, wp.lat]);
 
-    // Rotate: target planeInner only — never overwrite planeOuter.style.transform
+    // Rotate: subtract map.getBearing() so the SVG stays aligned with the route
+    // regardless of how the user has rotated the map.
+    // Target planeInner only — never overwrite planeOuter.style.transform (Mapbox owns it)
     const inner = planeRef.current.getElement().firstElementChild as HTMLElement | null;
-    if (inner) inner.style.transform = `rotate(${wp.bearingDeg}deg)`;
+    if (inner) inner.style.transform = `rotate(${wp.bearingDeg - map.getBearing()}deg)`;
 
     // Extend flown path
     const flownSource = map.getSource('flown') as mapboxgl.GeoJSONSource | undefined;

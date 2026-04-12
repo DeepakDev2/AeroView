@@ -52,22 +52,25 @@ export default function TimeSlider({
 
       {/* Scrubbar */}
       <div className="flex-1 flex flex-col gap-1">
-        <div className="relative h-2 rounded-full bg-gray-700 overflow-hidden">
-          <div
-            className="absolute left-0 top-0 h-full bg-blue-500 rounded-full transition-none"
-            style={{ width: `${pct}%` }}
+        {/* Track + invisible range input share the same relative container so
+            click targets align perfectly with the visual bar */}
+        <div className="relative h-4 flex items-center">
+          <div className="w-full h-2 rounded-full bg-gray-700 overflow-hidden pointer-events-none">
+            <div
+              className="h-full bg-blue-500 rounded-full transition-none"
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={maxIndex}
+            value={currentIndex}
+            onChange={(e) => onChange(Number(e.target.value))}
+            className="absolute inset-0 w-full opacity-0 cursor-pointer"
+            aria-label="Flight progress"
           />
         </div>
-        <input
-          type="range"
-          min={0}
-          max={maxIndex}
-          value={currentIndex}
-          onChange={(e) => onChange(Number(e.target.value))}
-          className="absolute opacity-0 w-full cursor-pointer"
-          style={{ marginTop: '-10px' }}
-          aria-label="Flight progress"
-        />
         <div className="flex justify-between text-xs text-gray-500 select-none">
           <span>Departure</span>
           <span>{formatElapsed(totalMs)} total</span>
