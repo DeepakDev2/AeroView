@@ -96,8 +96,9 @@ export function computeVerdict(
 ): SeatVerdict {
   let leftScore = 0;
   let rightScore = 0;
-  const leftEvents: ScoredEvent[] = [];
+  const leftEvents: ScoredEvent[]  = [];
   const rightEvents: ScoredEvent[] = [];
+  const seenPoiIds = new Set<string>(); // dedup: one event per unique POI
 
   const departureMs = waypoints[0]?.utcTime.getTime() ?? 0;
   const weatherFactor = preferences.isOvercast
@@ -151,6 +152,8 @@ export function computeVerdict(
     for (const poiResult of wp.nearbyPOIs) {
       const score = scoreLandmark(poiResult.distanceKm, preferences);
       if (score === 0) continue;
+      if (seenPoiIds.has(poiResult.poi.id)) continue;
+      seenPoiIds.add(poiResult.poi.id);
       const side = sideOfPlane(wp.bearingDeg, poiResult.bearingFromPlane);
       const type =
         poiResult.poi.category === 'city' ? 'city' : 'landmark';
