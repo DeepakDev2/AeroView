@@ -1,0 +1,32 @@
+# Environment secrets — NEVER commit
+.env.local
+.env*.local
+
+# Temp / debug / scratch files
+/tmp/
+
+# Next.js build output
+.next/
+out/
+
+# Node dependencies
+node_modules/
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Testing
+coverage/
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
+
+# Logs
+*.log
+npm-debug.log*
