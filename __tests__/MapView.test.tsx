@@ -1,47 +1,62 @@
 /**
- * __tests__/MapView.test.tsx — Phase 5 component tests
+ * __tests__/MapView.test.tsx — Phase 5 component tests (Mapbox GL JS)
  *
  * @jest-environment jsdom
  *
- * react-leaflet and leaflet are mocked — Leaflet requires real browser APIs
- * that jsdom cannot provide. Tests cover prop-wiring only.
+ * mapbox-gl is mocked — it requires a real browser WebGL context that jsdom
+ * cannot provide. Tests cover React-rendered output only (verdict badge,
+ * EventSidePanel events, TimeSlider controls).
  */
 
 import React from 'react';
 import { render, screen } from '@testing-library/react';
-import type { WaypointData, AirportRecord, SeatVerdict } from '../src/types';
+import type { WaypointData, AirportRecord, SeatVerdict, ScoredEvent } from '../src/types';
 
-// ── Mock react-leaflet ────────────────────────────────────────────────────────
+// ── Mock mapbox-gl ────────────────────────────────────────────────────────────
 
-jest.mock('react-leaflet', () => ({
-  MapContainer: ({ children }: { children: React.ReactNode }) => (
-    <div data-testid="map-container">{children}</div>
-  ),
-  TileLayer: () => null,
-  Polyline: () => null,
-  Marker: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  Popup: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  Tooltip: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
-  useMap: () => ({ fitBounds: jest.fn() }),
-}));
+jest.mock('mapbox-gl', () => {
+  const addTo = jest.fn().mockReturnThis();
+  const setPopup = jest.fn().mockReturnThis();
+  const setLngLat = jest.fn().mockReturnThis();
+  const getElement = jest.fn().mockReturnValue({ style: {} });
 
-// ── Mock leaflet ──────────────────────────────────────────────────────────────
+  const MockMarker = jest.fn().mockImplementation(() => ({
+    addTo,
+    setLngLat,
+    setPopup,
+    getElement,
+  }));
 
-jest.mock('leaflet', () => ({
-  Icon: { Default: { prototype: {}, mergeOptions: jest.fn() } },
-  divIcon: () => ({}),
-  latLngBounds: () => ({}),
-}));
+  const MockPopup = jest.fn().mockImplementation(() => ({
+    setHTML: jest.fn().mockReturnThis(),
+  }));
 
-// ── Mock leaflet CSS ──────────────────────────────────────────────────────────
+  const MockMap = jest.fn().mockImplementation(() => ({
+    addControl: jest.fn(),
+    on: jest.fn(),         // 'load' callback never fires — that's fine
+    remove: jest.fn(),
+    getSource: jest.fn().mockReturnValue({ setData: jest.fn() }),
+    addSource: jest.fn(),
+    addLayer: jest.fn(),
+    setTerrain: jest.fn(),
+    setFog: jest.fn(),
+    fitBounds: jest.fn(),
+  }));
 
-jest.mock('leaflet/dist/leaflet.css', () => {});
+  return {
+    __esModule: true,
+    default: {
+      accessToken: '',
+      Map: MockMap,
+      Marker: MockMarker,
+      Popup: MockPopup,
+      NavigationControl: jest.fn(),
+      LngLatBounds: jest.fn().mockImplementation(() => ({ extend: jest.fn() })),
+    },
+  };
+});
 
-// ── Mock leaflet marker images ────────────────────────────────────────────────
-
-jest.mock('leaflet/dist/images/marker-icon-2x.png', () => '');
-jest.mock('leaflet/dist/images/marker-icon.png', () => '');
-jest.mock('leaflet/dist/images/marker-shadow.png', () => '');
+jest.mock('mapbox-gl/dist/mapbox-gl.css', () => {});
 
 // ── Import component AFTER mocks ──────────────────────────────────────────────
 
@@ -79,6 +94,21 @@ function makeWaypoint(
   };
 }
 
+function makeScoredEvent(
+  name: string,
+  side: 'left' | 'right',
+  timeMin: number
+): ScoredEvent {
+  return {
+    type: 'landmark',
+    name,
+    side,
+    score: 1,
+    timeMinFromDeparture: timeMin,
+    solarElevDeg: 10,
+  };
+}
+
 const LEFT_VERDICT: SeatVerdict = {
   winner: 'left', confidence: 0.8,
   leftScore: 4, rightScore: 1,
@@ -93,9 +123,36 @@ const EITHER_VERDICT: SeatVerdict = {
   flightDurationMin: 370,
 };
 
-// ── TC-P5-T1: Renders map container without crash ─────────────────────────────
+const EVENTS_VERDICT: SeatVerdict = {
+  winner: 'left', confidence: 0.9,
+  leftScore: 5, rightScore: 1,
+  leftEvents: [
+    makeScoredEvent('Alps', 'left', 200),
+  ],
+  rightEvents: [
+    makeScoredEvent('Atlantic', 'right', 60),
+  ],
+  flightDurationMin: 370,
+};
 
-test('TC-P5-T1: renders map container without crash', () => {
+// ── TC-P5-T1: Renders without crash ──────────────────────────────────────────
+
+test('TC-P5-T1: renders map shell without crash', () => {
+  const { container } = render(
+    <MapView
+      waypoints={[makeWaypoint(0), makeWaypoint(1)]}
+      origin={JFK}
+      destination={LHR}
+      verdict={LEFT_VERDICT}
+    />
+  );
+  // Outer wrapper div always renders
+  expect(container.firstChild).not.toBeNull();
+});
+
+// ── TC-P5-T2: EventSidePanel renders flight events header ─────────────────────
+
+test('TC-P5-T2: EventSidePanel "Flight Events" header is rendered', () => {
   render(
     <MapView
       waypoints={[makeWaypoint(0), makeWaypoint(1)]}
@@ -104,41 +161,24 @@ test('TC-P5-T1: renders map container without crash', () => {
       verdict={LEFT_VERDICT}
     />
   );
-  expect(screen.getByTestId('map-container')).toBeInTheDocument();
+  expect(screen.getByText(/Flight Events/i)).toBeInTheDocument();
 });
 
-// ── TC-P5-T2: Origin and destination labels rendered ─────────────────────────
+// ── TC-P5-T3: EventSidePanel lists scored events ──────────────────────────────
 
-test('TC-P5-T2: origin and destination airport names appear in popups', () => {
-  render(
-    <MapView
-      waypoints={[makeWaypoint(0), makeWaypoint(1)]}
-      origin={JFK}
-      destination={LHR}
-      verdict={LEFT_VERDICT}
-    />
-  );
-  expect(screen.getByText(/JFK/)).toBeInTheDocument();
-  expect(screen.getByText(/LHR/)).toBeInTheDocument();
-});
-
-// ── TC-P5-T3: Horizon event markers rendered ──────────────────────────────────
-
-test('TC-P5-T3: sunrise and sunset labels rendered for horizon event waypoints', () => {
+test('TC-P5-T3: EventSidePanel lists events from both sides', () => {
   const waypoints = [
     makeWaypoint(0),
-    makeWaypoint(1, 'sunrise'),
-    makeWaypoint(2),
-    makeWaypoint(3, 'sunset'),
+    makeWaypoint(1),
   ];
   render(
-    <MapView waypoints={waypoints} origin={JFK} destination={LHR} verdict={LEFT_VERDICT} />
+    <MapView waypoints={waypoints} origin={JFK} destination={LHR} verdict={EVENTS_VERDICT} />
   );
-  expect(screen.getByText('Sunrise')).toBeInTheDocument();
-  expect(screen.getByText('Sunset')).toBeInTheDocument();
+  expect(screen.getByText('Alps')).toBeInTheDocument();
+  expect(screen.getByText('Atlantic')).toBeInTheDocument();
 });
 
-// ── TC-P5-T4: Verdict badge shows correct winner ──────────────────────────────
+// ── TC-P5-T4: Verdict badge correct winner ────────────────────────────────────
 
 test('TC-P5-T4: verdict badge shows correct side for left winner', () => {
   render(
@@ -162,4 +202,18 @@ test('TC-P5-T4b: verdict badge shows "either" when winner is either', () => {
     />
   );
   expect(screen.getByTestId('verdict-badge')).toHaveTextContent(/either/i);
+});
+
+// ── TC-P5-T5: TimeSlider play button is rendered ──────────────────────────────
+
+test('TC-P5-T5: TimeSlider play button is present', () => {
+  render(
+    <MapView
+      waypoints={[makeWaypoint(0), makeWaypoint(1)]}
+      origin={JFK}
+      destination={LHR}
+      verdict={LEFT_VERDICT}
+    />
+  );
+  expect(screen.getByRole('button', { name: /play/i })).toBeInTheDocument();
 });

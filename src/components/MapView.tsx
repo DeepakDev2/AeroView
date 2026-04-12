@@ -1,33 +1,18 @@
 'use client';
 
 /**
- * src/components/MapView.tsx — Layer 4A: Map Visualization
+ * src/components/MapView.tsx — Layer 4A: Mapbox 3D Map Visualization
  *
- * Zero math/business logic. Pure rendering of pre-computed waypoint data.
- * Must be imported via next/dynamic with ssr:false — Leaflet requires browser DOM.
+ * Must be imported via next/dynamic with ssr:false — Mapbox requires browser DOM.
+ * Contains animated plane, coloured route, event markers, time slider, event panel.
  */
 
-import { useEffect } from 'react';
-import {
-  MapContainer,
-  TileLayer,
-  Polyline,
-  Marker,
-  Popup,
-  Tooltip,
-  useMap,
-} from 'react-leaflet';
-import L from 'leaflet';
-import 'leaflet/dist/leaflet.css';
-import type { WaypointData, AirportRecord, SeatVerdict, POIRecord } from '@/types';
-
-// ── Leaflet default-icon fix (webpack/Next.js breaks default asset URLs) ──────
-delete (L.Icon.Default.prototype as unknown as Record<string, unknown>)._getIconUrl;
-L.Icon.Default.mergeOptions({
-  iconRetinaUrl: require('leaflet/dist/images/marker-icon-2x.png'),
-  iconUrl: require('leaflet/dist/images/marker-icon.png'),
-  shadowUrl: require('leaflet/dist/images/marker-shadow.png'),
-});
+import { useRef, useEffect, useState } from 'react';
+import mapboxgl from 'mapbox-gl';
+import 'mapbox-gl/dist/mapbox-gl.css';
+import TimeSlider from './TimeSlider';
+import EventSidePanel from './EventSidePanel';
+import type { WaypointData, AirportRecord, SeatVerdict, ScoredEvent } from '@/types';
 
 // ── Props ─────────────────────────────────────────────────────────────────────
 
@@ -38,95 +23,81 @@ interface MapViewProps {
   verdict: SeatVerdict;
 }
 
-// ── UI helpers (presentation only — no domain constants) ──────────────────────
+// ── Route colour by solar elevation (night / twilight / day) ──────────────────
 
-/** Maps solar elevation to a polyline colour. Pure UI decision. */
 function elevToColor(elevDeg: number): string {
-  if (elevDeg < -6) return '#1e3a5f'; // night  — dark blue
-  if (elevDeg < 0) return '#e67e22';  // twilight — orange
-  return '#f1c40f';                    // day     — yellow
+  if (elevDeg < -6) return '#1e3a5f';
+  if (elevDeg < 0)  return '#f97316';
+  return '#facc15';
 }
 
-type Segment = { positions: [number, number][]; color: string };
-
-/**
- * Groups consecutive waypoints into colour segments for the polyline.
- * Adjacent waypoints with the same colour are merged into one Polyline
- * to minimise DOM elements.
- */
-function buildSegments(waypoints: WaypointData[]): Segment[] {
-  if (waypoints.length < 2) return [];
-  const segments: Segment[] = [];
-  let pos: [number, number][] = [[waypoints[0].lat, waypoints[0].lon]];
-  let color = elevToColor(waypoints[0].solarElevDeg);
-
-  for (let i = 1; i < waypoints.length; i++) {
-    const wp = waypoints[i];
-    const c = elevToColor(wp.solarElevDeg);
-    pos.push([wp.lat, wp.lon]);
-    if (c !== color) {
-      segments.push({ positions: [...pos], color });
-      pos = [[wp.lat, wp.lon]];
-      color = c;
-    }
-  }
-  if (pos.length >= 2) segments.push({ positions: pos, color });
-  return segments;
-}
-
-/** Deduplicates POIs across all waypoints by poi.id. */
-function collectUniquePOIs(
-  waypoints: WaypointData[]
-): Array<{ poi: POIRecord; lat: number; lon: number }> {
-  const seen = new Set<string>();
-  const result: Array<{ poi: POIRecord; lat: number; lon: number }> = [];
-  for (const wp of waypoints) {
-    for (const pr of wp.nearbyPOIs) {
-      if (!seen.has(pr.poi.id)) {
-        seen.add(pr.poi.id);
-        result.push({ poi: pr.poi, lat: pr.poi.lat, lon: pr.poi.lon });
-      }
-    }
-  }
-  return result;
-}
-
-// ── Custom divIcons ───────────────────────────────────────────────────────────
-
-const makeIcon = (emoji: string) =>
-  L.divIcon({
-    html: `<span style="font-size:20px;line-height:1">${emoji}</span>`,
-    className: '',
-    iconSize: [24, 24],
-    iconAnchor: [12, 12],
-  });
-
-const ICON_ORIGIN      = makeIcon('🛫');
-const ICON_DEST        = makeIcon('🛬');
-const ICON_SUNRISE     = makeIcon('🌅');
-const ICON_SUNSET      = makeIcon('🌇');
-const ICON_POI         = makeIcon('📍');
-
-// ── FitBounds — auto-zooms map to show full route ─────────────────────────────
-
-function FitBounds({ waypoints }: { waypoints: WaypointData[] }) {
-  const map = useMap();
-  useEffect(() => {
-    if (waypoints.length > 0) {
-      const bounds = L.latLngBounds(waypoints.map((wp) => [wp.lat, wp.lon]));
-      map.fitBounds(bounds, { padding: [40, 40] });
-    }
-  }, [map, waypoints]);
-  return null;
-}
-
-// ── Verdict badge label ───────────────────────────────────────────────────────
+// ── Verdict label ─────────────────────────────────────────────────────────────
 
 function verdictLabel(winner: SeatVerdict['winner']): string {
-  if (winner === 'left') return '← Sit on the LEFT';
+  if (winner === 'left')  return '← Sit on the LEFT';
   if (winner === 'right') return 'Sit on the RIGHT →';
-  return 'Either side is fine';
+  return '↔ Either side';
 }
+
+// ── Event icon by type ────────────────────────────────────────────────────────
+
+function eventIcon(type: ScoredEvent['type']): string {
+  if (type === 'sunrise') return '🌅';
+  if (type === 'sunset')  return '🌇';
+  if (type === 'city')    return '🏙️';
+  return '📍';
+}
+
+// ── Find waypoint closest to an event's elapsed time ─────────────────────────
+
+function waypointForEvent(ev: ScoredEvent, waypoints: WaypointData[]): WaypointData {
+  const deptMs  = waypoints[0].utcTime.getTime();
+  const targetMs = deptMs + ev.timeMinFromDeparture * 60_000;
+  return waypoints.reduce((best, wp) =>
+    Math.abs(wp.utcTime.getTime() - targetMs) <
+    Math.abs(best.utcTime.getTime() - targetMs) ? wp : best
+  );
+}
+
+// ── Dynamic fog / sky colours based on solar elevation ────────────────────────
+
+type FogConfig = Parameters<mapboxgl.Map['setFog']>[0];
+
+function fogForElev(elev: number): FogConfig {
+  if (elev < -12) return {
+    color: 'rgb(2,4,20)', 'high-color': 'rgb(5,15,50)',
+    'horizon-blend': 0.04, 'space-color': 'rgb(0,0,10)', 'star-intensity': 0.95,
+  };
+  if (elev < -6) return {
+    color: 'rgb(10,15,40)', 'high-color': 'rgb(20,40,100)',
+    'horizon-blend': 0.05, 'space-color': 'rgb(2,6,23)', 'star-intensity': 0.65,
+  };
+  if (elev < 0) return {
+    color: 'rgb(90,45,20)', 'high-color': 'rgb(210,100,30)',
+    'horizon-blend': 0.07, 'space-color': 'rgb(2,6,23)', 'star-intensity': 0.2,
+  };
+  if (elev < 15) return {
+    color: 'rgb(185,130,75)', 'high-color': 'rgb(100,155,225)',
+    'horizon-blend': 0.06, 'space-color': 'rgb(2,6,23)', 'star-intensity': 0,
+  };
+  // Full day
+  return {
+    color: 'rgb(185,215,245)', 'high-color': 'rgb(75,145,230)',
+    'horizon-blend': 0.04, 'space-color': 'rgb(2,6,23)', 'star-intensity': 0,
+  };
+}
+
+// ── SVG airplane top-down view pointing north (up) ───────────────────────────
+// Path anatomy (24×24 grid):
+//   Nose tip    → (12, 1)
+//   Wings       → span x=2..22 at y≈9–15  (swept back, wide)
+//   Tail fins   → span x=10.5..13.5 at y≈15–21 (small horizontal stabilisers)
+
+const PLANE_SVG = `<svg viewBox="0 0 24 24" width="36" height="36" xmlns="http://www.w3.org/2000/svg"
+  style="filter:drop-shadow(0 0 7px rgba(96,165,250,1));">
+  <path d="M12,1 L13,9 L22,13 L13,15 L13.5,21 L12,20 L10.5,21 L11,15 L2,13 L11,9 Z"
+        fill="#60a5fa" stroke="#bfdbfe" stroke-width="0.4"/>
+</svg>`;
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -136,101 +107,287 @@ export default function MapView({
   destination,
   verdict,
 }: MapViewProps) {
-  const segments = buildSegments(waypoints);
-  const pois = collectUniquePOIs(waypoints);
-  const horizonWaypoints = waypoints.filter((wp) => wp.isHorizonEvent !== null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const mapRef       = useRef<mapboxgl.Map | null>(null);
+  const planeRef     = useRef<mapboxgl.Marker | null>(null);
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [isPlaying,    setIsPlaying]    = useState(false);
+  const [mapReady,     setMapReady]     = useState(false);
 
-  // Fallback center while waypoints load
-  const center: [number, number] = [
-    (origin.lat + destination.lat) / 2,
-    (origin.lon + destination.lon) / 2,
-  ];
+  const maxIndex = waypoints.length - 1;
 
+  // ── Initialise map once ─────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!containerRef.current) return;
+
+    const token = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
+    if (!token) { console.error('NEXT_PUBLIC_MAPBOX_TOKEN is not set'); return; }
+
+    mapboxgl.accessToken = token;
+
+    const map = new mapboxgl.Map({
+      container: containerRef.current,
+      style: 'mapbox://styles/mapbox/dark-v11',
+      center: [
+        (origin.lon + destination.lon) / 2,
+        (origin.lat + destination.lat) / 2,
+      ],
+      zoom: 3,
+      pitch: 50,
+      bearing: -10,
+      antialias: true,
+    });
+
+    mapRef.current = map;
+    map.addControl(new mapboxgl.NavigationControl(), 'top-right');
+
+    map.on('load', () => {
+      // ── 3-D terrain ──────────────────────────────────────────────────────
+      map.addSource('mapbox-dem', {
+        type: 'raster-dem',
+        url: 'mapbox://mapbox.terrain-rgb',
+        tileSize: 512,
+        maxzoom: 14,
+      });
+      map.setTerrain({ source: 'mapbox-dem', exaggeration: 1.5 });
+
+      // Initial atmosphere based on departure solar elevation
+      map.setFog(fogForElev(waypoints[0].solarElevDeg));
+
+      // ── Full coloured route (solar elevation per segment) ─────────────────
+      const segmentFeatures = waypoints.slice(1).map((wp, i) => ({
+        type: 'Feature' as const,
+        geometry: {
+          type: 'LineString' as const,
+          coordinates: [
+            [waypoints[i].lon, waypoints[i].lat],
+            [wp.lon, wp.lat],
+          ],
+        },
+        properties: { color: elevToColor(waypoints[i].solarElevDeg) },
+      }));
+
+      map.addSource('segments', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: segmentFeatures },
+      });
+      map.addLayer({
+        id: 'route-colored',
+        type: 'line',
+        source: 'segments',
+        paint: {
+          'line-color': ['get', 'color'],
+          'line-width': 3,
+          'line-opacity': 0.75,
+        },
+      });
+
+      // ── Dashed overlay (unflown future path) ─────────────────────────────
+      const routeCoords = waypoints.map((wp) => [wp.lon, wp.lat]);
+      map.addSource('route', {
+        type: 'geojson',
+        data: {
+          type: 'Feature',
+          geometry: { type: 'LineString', coordinates: routeCoords },
+          properties: {},
+        },
+      });
+      map.addLayer({
+        id: 'route-dashed',
+        type: 'line',
+        source: 'route',
+        paint: {
+          'line-color': '#334155',
+          'line-width': 1.5,
+          'line-dasharray': [3, 3],
+          'line-opacity': 0.45,
+        },
+      });
+
+      // ── Flown path (bright glow — grows as plane advances) ────────────────
+      map.addSource('flown', {
+        type: 'geojson',
+        data: {
+          type: 'Feature',
+          geometry: {
+            type: 'LineString',
+            coordinates: [[waypoints[0].lon, waypoints[0].lat]],
+          },
+          properties: {},
+        },
+      });
+      map.addLayer({
+        id: 'flown-glow',
+        type: 'line',
+        source: 'flown',
+        paint: { 'line-color': '#60a5fa', 'line-width': 7, 'line-blur': 5, 'line-opacity': 0.45 },
+      });
+      map.addLayer({
+        id: 'flown-core',
+        type: 'line',
+        source: 'flown',
+        paint: { 'line-color': '#bfdbfe', 'line-width': 2.5, 'line-opacity': 0.95 },
+      });
+
+      // ── Origin marker ─────────────────────────────────────────────────────
+      new mapboxgl.Marker({ color: '#3b82f6' })
+        .setLngLat([origin.lon, origin.lat])
+        .setPopup(
+          new mapboxgl.Popup({ offset: 25 }).setHTML(
+            `<strong>${origin.iata}</strong> — ${origin.city}`
+          )
+        )
+        .addTo(map);
+
+      // ── Destination marker ────────────────────────────────────────────────
+      new mapboxgl.Marker({ color: '#818cf8' })
+        .setLngLat([destination.lon, destination.lat])
+        .setPopup(
+          new mapboxgl.Popup({ offset: 25 }).setHTML(
+            `<strong>${destination.iata}</strong> — ${destination.city}`
+          )
+        )
+        .addTo(map);
+
+      // ── Verdict event markers (scored left + right events) ────────────────
+      const allEvents = [...verdict.leftEvents, ...verdict.rightEvents];
+      allEvents.forEach((ev) => {
+        const wp  = waypointForEvent(ev, waypoints);
+        const el  = document.createElement('div');
+        el.textContent = eventIcon(ev.type);
+        el.style.cssText = `
+          font-size: 18px;
+          cursor: pointer;
+          filter: drop-shadow(0 1px 3px rgba(0,0,0,0.9));
+        `;
+        new mapboxgl.Marker({ element: el })
+          .setLngLat([wp.lon, wp.lat])
+          .setPopup(
+            new mapboxgl.Popup({ offset: 16 }).setHTML(
+              `<strong>${ev.name}</strong><br/>
+               <small style="color:#94a3b8">${ev.side === 'left' ? '← Left window' : '→ Right window'}</small>`
+            )
+          )
+          .addTo(map);
+      });
+
+      // ── Plane marker ──────────────────────────────────────────────────────
+      // Two-layer structure is required:
+      //   planeOuter — Mapbox writes its own positioning transform here; never touch it
+      //   planeInner — we write rotate() here only; Mapbox never touches this child
+      const planeOuter = document.createElement('div');
+      planeOuter.style.cssText = 'cursor: pointer;';
+
+      const planeInner = document.createElement('div');
+      planeInner.innerHTML = PLANE_SVG;
+      planeInner.style.cssText = 'transform-origin: center; transition: transform 0.12s linear;';
+
+      planeOuter.appendChild(planeInner);
+
+      const planeMarker = new mapboxgl.Marker({ element: planeOuter, anchor: 'center' })
+        .setLngLat([waypoints[0].lon, waypoints[0].lat])
+        .addTo(map);
+      planeRef.current = planeMarker;
+
+      // ── Fit bounds ────────────────────────────────────────────────────────
+      const bounds = new mapboxgl.LngLatBounds();
+      waypoints.forEach((wp) => bounds.extend([wp.lon, wp.lat] as [number, number]));
+      map.fitBounds(bounds, { padding: { top: 60, bottom: 80, left: 60, right: 60 } });
+
+      setMapReady(true);
+    });
+
+    return () => {
+      map.remove();
+      mapRef.current = null;
+      planeRef.current = null;
+      setMapReady(false);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── Update plane, flown path, and sky on index change ─────────────────────
+  useEffect(() => {
+    if (!mapReady || !mapRef.current || !planeRef.current) return;
+    const map = mapRef.current;
+    const wp  = waypoints[currentIndex];
+
+    // Move plane: setLngLat → Mapbox updates planeOuter.style.transform (position)
+    planeRef.current.setLngLat([wp.lon, wp.lat]);
+
+    // Rotate: target planeInner only — never overwrite planeOuter.style.transform
+    const inner = planeRef.current.getElement().firstElementChild as HTMLElement | null;
+    if (inner) inner.style.transform = `rotate(${wp.bearingDeg}deg)`;
+
+    // Extend flown path
+    const flownSource = map.getSource('flown') as mapboxgl.GeoJSONSource | undefined;
+    flownSource?.setData({
+      type: 'Feature',
+      geometry: {
+        type: 'LineString',
+        coordinates: waypoints.slice(0, currentIndex + 1).map((w) => [w.lon, w.lat]),
+      },
+      properties: {},
+    });
+
+    // Update sky / atmosphere for current solar position
+    map.setFog(fogForElev(wp.solarElevDeg));
+  }, [currentIndex, mapReady, waypoints]);
+
+  // ── Auto-play animation ────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!isPlaying) return;
+    const id = setInterval(() => {
+      setCurrentIndex((prev) => {
+        if (prev >= maxIndex) { setIsPlaying(false); return prev; }
+        return prev + 1;
+      });
+    }, 80);
+    return () => clearInterval(id);
+  }, [isPlaying, maxIndex]);
+
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
-    <div className="relative w-full h-full">
-      {/* Verdict badge overlay */}
-      <div
-        data-testid="verdict-badge"
-        className={`
-          absolute top-3 left-1/2 -translate-x-1/2 z-[1000]
-          px-4 py-2 rounded-full text-sm font-semibold shadow-lg
-          ${verdict.winner === 'either'
-            ? 'bg-gray-700 text-gray-200'
-            : 'bg-blue-600 text-white'}
-        `}
-      >
-        {verdictLabel(verdict.winner)}
+    <div className="w-full rounded-xl overflow-hidden border border-gray-700 flex flex-col">
+      {/* Map + Events row */}
+      <div className="flex" style={{ height: '450px' }}>
+        {/* Mapbox container */}
+        <div ref={containerRef} className="flex-1 relative">
+          {/* Verdict badge */}
+          <div
+            data-testid="verdict-badge"
+            className={`
+              absolute top-3 left-1/2 -translate-x-1/2 z-10
+              px-4 py-1.5 rounded-full text-xs font-bold shadow-xl backdrop-blur-sm
+              ${verdict.winner === 'either'
+                ? 'bg-gray-800/80 text-gray-200 border border-gray-600'
+                : 'bg-blue-600/90 text-white border border-blue-400'}
+            `}
+          >
+            {verdictLabel(verdict.winner)}
+          </div>
+        </div>
+
+        {/* Events side panel */}
+        <EventSidePanel
+          verdict={verdict}
+          waypoints={waypoints}
+          currentIndex={currentIndex}
+        />
       </div>
 
-      <MapContainer
-        center={center}
-        zoom={4}
-        className="w-full h-full"
-        scrollWheelZoom
-      >
-        <TileLayer
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-        />
-
-        {/* Auto-fit to route */}
-        {waypoints.length > 0 && <FitBounds waypoints={waypoints} />}
-
-        {/* Route polyline — coloured by solar elevation */}
-        {segments.map((seg, i) => (
-          <Polyline
-            key={i}
-            positions={seg.positions}
-            pathOptions={{ color: seg.color, weight: 3, opacity: 0.85 }}
-          />
-        ))}
-
-        {/* Origin marker */}
-        <Marker position={[origin.lat, origin.lon]} icon={ICON_ORIGIN}>
-          <Popup>
-            <strong>{origin.iata}</strong> — {origin.name}
-            <br />
-            {origin.city}, {origin.country}
-          </Popup>
-        </Marker>
-
-        {/* Destination marker */}
-        <Marker position={[destination.lat, destination.lon]} icon={ICON_DEST}>
-          <Popup>
-            <strong>{destination.iata}</strong> — {destination.name}
-            <br />
-            {destination.city}, {destination.country}
-          </Popup>
-        </Marker>
-
-        {/* Sunrise / sunset markers */}
-        {horizonWaypoints.map((wp) => (
-          <Marker
-            key={`horizon-${wp.index}`}
-            position={[wp.lat, wp.lon]}
-            icon={wp.isHorizonEvent === 'sunrise' ? ICON_SUNRISE : ICON_SUNSET}
-          >
-            <Tooltip permanent={false}>
-              {wp.isHorizonEvent === 'sunrise' ? 'Sunrise' : 'Sunset'}
-            </Tooltip>
-          </Marker>
-        ))}
-
-        {/* POI markers */}
-        {pois.map(({ poi }) => (
-          <Marker
-            key={poi.id}
-            position={[poi.lat, poi.lon]}
-            icon={ICON_POI}
-          >
-            <Popup>
-              <strong>{poi.name}</strong>
-              <br />
-              <span className="text-xs text-gray-500 capitalize">{poi.category}</span>
-            </Popup>
-          </Marker>
-        ))}
-      </MapContainer>
+      {/* Time slider */}
+      <TimeSlider
+        currentIndex={currentIndex}
+        maxIndex={maxIndex}
+        waypoints={waypoints}
+        isPlaying={isPlaying}
+        onChange={(i) => { setCurrentIndex(i); }}
+        onPlayPause={() => {
+          if (currentIndex >= maxIndex) setCurrentIndex(0);
+          setIsPlaying((p) => !p);
+        }}
+      />
     </div>
   );
 }

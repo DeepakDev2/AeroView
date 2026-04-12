@@ -44,12 +44,6 @@ export default function ResultScreen({
   onReset,
 }: ResultScreenProps) {
   const { origin, destination, departureUTC } = input;
-  const winningEvents =
-    verdict.winner === 'left'
-      ? verdict.leftEvents
-      : verdict.winner === 'right'
-      ? verdict.rightEvents
-      : [...verdict.leftEvents, ...verdict.rightEvents];
 
   return (
     <div className="flex flex-col gap-6 w-full max-w-2xl mx-auto">
@@ -94,15 +88,13 @@ export default function ResultScreen({
         <EventList events={verdict.rightEvents} side="right" />
       </div>
 
-      {/* Map */}
-      <div className="w-full h-72 rounded-xl overflow-hidden">
-        <MapView
-          waypoints={waypoints}
-          origin={origin}
-          destination={destination}
-          verdict={verdict}
-        />
-      </div>
+      {/* Map — MapView is self-contained with its own height */}
+      <MapView
+        waypoints={waypoints}
+        origin={origin}
+        destination={destination}
+        verdict={verdict}
+      />
 
       {/* LLM Narrative */}
       <NarrativeCard
