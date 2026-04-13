@@ -10,6 +10,7 @@
 
 import dynamic from 'next/dynamic';
 import SeatBadge from './SeatBadge';
+import CabinDiagram from './CabinDiagram';
 import EventList from './EventList';
 import WindowMockup from './WindowMockup';
 import NarrativeCard from './NarrativeCard';
@@ -69,6 +70,9 @@ export default function ResultScreen({
         leftScore={verdict.leftScore}
         rightScore={verdict.rightScore}
       />
+
+      {/* Cabin overhead diagram */}
+      <CabinDiagram winner={verdict.winner} />
 
       {/* Window mockups */}
       <div className="flex justify-center gap-12">

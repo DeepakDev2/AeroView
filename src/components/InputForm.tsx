@@ -28,11 +28,31 @@ const DEFAULT_PREFS: UserPreferences = {
 };
 
 const WEIGHT_LABELS: Record<keyof UserPreferences['weights'], string> = {
-  sunrise: 'Sunrise',
-  sunset: 'Sunset',
+  sunrise:   'Sunrise',
+  sunset:    'Sunset',
   landscape: 'Landscape',
-  avoidSun: 'Avoid Sun Glare',
+  avoidSun:  'Avoid Sun Glare',
 };
+
+// ── Date validation (pure — no domain math) ──────────────────────────────────
+
+function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
+
+/**
+ * Returns an error string if the YYYY-MM-DD string fails year / leap-year rules,
+ * or null when the date is valid.
+ */
+function validateDate(dateStr: string): string | null {
+  if (!dateStr) return null;
+  const [y, m, d] = dateStr.split('-').map(Number);
+  if (y < 1000) return 'Year must be 4 digits (1000 or later).';
+  if (y > 3036) return 'Year cannot be later than 3036.';
+  if (m === 2 && d === 29 && !isLeapYear(y))
+    return `${y} is not a leap year — February 29 does not exist.`;
+  return null;
+}
 
 export default function InputForm({
   airports,
@@ -40,12 +60,12 @@ export default function InputForm({
   isLoading = false,
 }: InputFormProps) {
   // ── Airport selection ────────────────────────────────────────────────────
-  const [originQuery, setOriginQuery] = useState('');
-  const [destQuery, setDestQuery] = useState('');
-  const [origin, setOrigin] = useState<AirportRecord | null>(null);
-  const [destination, setDestination] = useState<AirportRecord | null>(null);
+  const [originQuery,    setOriginQuery]    = useState('');
+  const [destQuery,      setDestQuery]      = useState('');
+  const [origin,         setOrigin]         = useState<AirportRecord | null>(null);
+  const [destination,    setDestination]    = useState<AirportRecord | null>(null);
   const [showOriginDrop, setShowOriginDrop] = useState(false);
-  const [showDestDrop, setShowDestDrop] = useState(false);
+  const [showDestDrop,   setShowDestDrop]   = useState(false);
 
   // ── Departure UTC ────────────────────────────────────────────────────────
   const [departureDate, setDepartureDate] = useState('');
@@ -54,7 +74,11 @@ export default function InputForm({
   // ── Preferences ──────────────────────────────────────────────────────────
   const [preferences, setPreferences] = useState<UserPreferences>(DEFAULT_PREFS);
 
-  // ── Autocomplete filtering (no domain math) ───────────────────────────────
+  // ── Validation state ─────────────────────────────────────────────────────
+  // touched: show field error only after user has blurred the field
+  const [touched, setTouched] = useState({ origin: false, dest: false, date: false });
+
+  // ── Autocomplete filtering ────────────────────────────────────────────────
   const originResults = useMemo(() => {
     if (originQuery.length < AUTOCOMPLETE_MIN_CHARS) return [];
     const q = originQuery.toLowerCase();
@@ -81,9 +105,21 @@ export default function InputForm({
       .slice(0, AUTOCOMPLETE_MAX_RESULTS);
   }, [destQuery, airports]);
 
-  // ── Derived state ─────────────────────────────────────────────────────────
+  // ── Validation errors ─────────────────────────────────────────────────────
+  const showOriginError   = touched.origin && !origin && originQuery !== '';
+  const showDestError     = touched.dest   && !destination && destQuery !== '';
+  const showSameAirport   = origin !== null && destination !== null && origin.iata === destination.iata;
+  const showDateError     = touched.date   && departureDate === '';
+  const dateFormatError   = validateDate(departureDate);  // null when valid
+  const showDateFmtError  = touched.date && dateFormatError !== null;
+
   const canSubmit =
-    origin !== null && destination !== null && departureDate !== '' && !isLoading;
+    origin !== null &&
+    destination !== null &&
+    origin.iata !== destination.iata &&
+    departureDate !== '' &&
+    dateFormatError === null &&
+    !isLoading;
 
   // ── Handlers ──────────────────────────────────────────────────────────────
   function selectOrigin(airport: AirportRecord) {
@@ -102,20 +138,27 @@ export default function InputForm({
     setPreferences((p) => ({ ...p, weights: { ...p.weights, [key]: value } }));
   }
 
-  function handleSubmit(e: React.FormEvent) {
+  function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    if (!origin || !destination) return;
+    if (!canSubmit) return;
     const departureUTC = `${departureDate}T${departureTime}:00Z`;
-    onSubmit({ origin, destination, departureUTC, preferences });
+    onSubmit({ origin: origin!, destination: destination!, departureUTC, preferences });
+  }
+
+  // ── Shared input class helper ─────────────────────────────────────────────
+  function inputCls(hasError: boolean) {
+    return `rounded-md bg-gray-800 border px-3 py-2 text-white placeholder-gray-500
+      focus:outline-none focus:border-blue-400 w-full
+      ${hasError ? 'border-red-500' : 'border-gray-600'}`;
   }
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <form onSubmit={handleSubmit} className="flex flex-col gap-6 w-full max-w-lg">
+    <form onSubmit={handleSubmit} className="flex flex-col gap-6 w-full max-w-lg" noValidate>
 
       {/* Origin */}
       <div className="flex flex-col gap-1 relative">
-        <label className="text-sm font-medium text-gray-300">Origin</label>
+        <label className="text-sm font-medium text-gray-300">Origin airport</label>
         <input
           type="text"
           value={originQuery}
@@ -125,11 +168,20 @@ export default function InputForm({
             setShowOriginDrop(true);
           }}
           onFocus={() => setShowOriginDrop(true)}
+          onBlur={() => {
+            setTimeout(() => setShowOriginDrop(false), 150);
+            setTouched((t) => ({ ...t, origin: true }));
+          }}
           placeholder="JFK, London, Tokyo…"
-          className="rounded-md bg-gray-800 border border-gray-600 px-3 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-blue-400"
+          className={inputCls(showOriginError)}
           aria-label="Origin airport"
           autoComplete="off"
         />
+        {showOriginError && (
+          <p className="text-xs text-red-400 mt-0.5">
+            Please select an airport from the dropdown list.
+          </p>
+        )}
         {showOriginDrop && originResults.length > 0 && (
           <ul
             role="listbox"
@@ -154,7 +206,7 @@ export default function InputForm({
 
       {/* Destination */}
       <div className="flex flex-col gap-1 relative">
-        <label className="text-sm font-medium text-gray-300">Destination</label>
+        <label className="text-sm font-medium text-gray-300">Destination airport</label>
         <input
           type="text"
           value={destQuery}
@@ -164,11 +216,25 @@ export default function InputForm({
             setShowDestDrop(true);
           }}
           onFocus={() => setShowDestDrop(true)}
+          onBlur={() => {
+            setTimeout(() => setShowDestDrop(false), 150);
+            setTouched((t) => ({ ...t, dest: true }));
+          }}
           placeholder="LHR, Paris, Sydney…"
-          className="rounded-md bg-gray-800 border border-gray-600 px-3 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-blue-400"
+          className={inputCls(showDestError || showSameAirport)}
           aria-label="Destination airport"
           autoComplete="off"
         />
+        {showDestError && (
+          <p className="text-xs text-red-400 mt-0.5">
+            Please select an airport from the dropdown list.
+          </p>
+        )}
+        {showSameAirport && (
+          <p className="text-xs text-red-400 mt-0.5">
+            Origin and destination cannot be the same airport.
+          </p>
+        )}
         {showDestDrop && destResults.length > 0 && (
           <ul
             role="listbox"
@@ -194,17 +260,30 @@ export default function InputForm({
       {/* Departure UTC */}
       <div className="flex gap-3">
         <div className="flex flex-col gap-1 flex-1">
-          <label className="text-sm font-medium text-gray-300">Departure date (UTC)</label>
+          <label className="text-sm font-medium text-gray-300">Departure date <span className="text-gray-500">(UTC)</span></label>
           <input
             type="date"
             value={departureDate}
+            min="1000-01-01"
+            max="3036-12-31"
             onChange={(e) => setDepartureDate(e.target.value)}
-            className="rounded-md bg-gray-800 border border-gray-600 px-3 py-2 text-white focus:outline-none focus:border-blue-400"
+            onBlur={() => setTouched((t) => ({ ...t, date: true }))}
+            className={inputCls(showDateError || showDateFmtError)}
             aria-label="Departure date"
           />
+          {showDateError && (
+            <p className="text-xs text-red-400 mt-0.5">
+              Please select a departure date.
+            </p>
+          )}
+          {showDateFmtError && (
+            <p className="text-xs text-red-400 mt-0.5">
+              {dateFormatError}
+            </p>
+          )}
         </div>
         <div className="flex flex-col gap-1 w-28">
-          <label className="text-sm font-medium text-gray-300">Time (UTC)</label>
+          <label className="text-sm font-medium text-gray-300">Time <span className="text-gray-500">(UTC)</span></label>
           <input
             type="time"
             value={departureTime}
@@ -218,26 +297,24 @@ export default function InputForm({
       {/* Preference sliders */}
       <div className="flex flex-col gap-3">
         <p className="text-sm font-medium text-gray-300">View preferences</p>
-        {(Object.keys(WEIGHT_LABELS) as Array<keyof UserPreferences['weights']>).map(
-          (key) => (
-            <div key={key} className="flex items-center gap-3">
-              <span className="text-sm text-gray-400 w-32">{WEIGHT_LABELS[key]}</span>
-              <input
-                type="range"
-                min={MIN_WEIGHT}
-                max={MAX_WEIGHT}
-                step={1}
-                value={preferences.weights[key]}
-                onChange={(e) => setWeight(key, Number(e.target.value))}
-                className="flex-1 accent-blue-400"
-                aria-label={`${WEIGHT_LABELS[key]} weight`}
-              />
-              <span className="text-sm text-white w-4 text-right">
-                {preferences.weights[key]}
-              </span>
-            </div>
-          )
-        )}
+        {(Object.keys(WEIGHT_LABELS) as Array<keyof UserPreferences['weights']>).map((key) => (
+          <div key={key} className="flex items-center gap-3">
+            <span className="text-sm text-gray-400 w-32">{WEIGHT_LABELS[key]}</span>
+            <input
+              type="range"
+              min={MIN_WEIGHT}
+              max={MAX_WEIGHT}
+              step={1}
+              value={preferences.weights[key]}
+              onChange={(e) => setWeight(key, Number(e.target.value))}
+              className="flex-1 accent-blue-400"
+              aria-label={`${WEIGHT_LABELS[key]} weight`}
+            />
+            <span className="text-sm text-white w-4 text-right">
+              {preferences.weights[key]}
+            </span>
+          </div>
+        ))}
 
         {/* Overcast toggle */}
         <label className="flex items-center gap-3 cursor-pointer">
@@ -250,7 +327,7 @@ export default function InputForm({
             className="w-4 h-4 accent-blue-400"
             aria-label="Overcast sky"
           />
-          <span className="text-sm text-gray-400">Overcast sky (reduces visibility scores)</span>
+          <span className="text-sm text-gray-400">Overcast sky (reduces visibility scores by 80%)</span>
         </label>
       </div>
 

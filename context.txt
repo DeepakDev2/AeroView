@@ -1,0 +1,704 @@
+================================================================================
+AEROVIEW — COMPLETE PROJECT CONTEXT
+Generated: 2026-04-13
+================================================================================
+
+--------------------------------------------------------------------------------
+1. PROJECT GOAL
+--------------------------------------------------------------------------------
+
+AeroView is a Next.js web application that analyses a flight route and tells the
+user which side of the airplane (left or right window seat) offers the best views
+during the flight. "Best views" is defined by a weighted combination of:
+  - Sunrise/sunset crossings visible from one side
+  - Solar elevation (night vs. twilight vs. full day)
+  - Landmarks, mountain ranges, and cities visible from one side
+  - User preference to avoid direct sunlight (avoidSun weight)
+
+The recommendation is backed by:
+  1. Great-circle geodesy (not straight-line — actual flight path)
+  2. SunCalc solar positioning (precise sun azimuth and elevation per waypoint)
+  3. A scoring engine that weights events and produces a SeatVerdict
+  4. An LLM narrative (Gemini 2.5 Flash, streaming) that explains the verdict
+  5. A Mapbox GL JS 3D animated map with a moving plane icon
+
+
+--------------------------------------------------------------------------------
+2. TECH STACK
+--------------------------------------------------------------------------------
+
+Framework:        Next.js 15 (App Router, src/ directory layout)
+Language:         TypeScript (strict mode)
+Styling:          Tailwind CSS v4
+Testing:          Jest + ts-jest + @testing-library/react + jest-environment-jsdom
+Map:              Mapbox GL JS v3 (replaced Leaflet — 3D terrain, fog, animation)
+Solar:            SunCalc (npm: suncalc)
+LLM:              Google Gemini 2.5 Flash via @google/generative-ai
+Animation:        motion (Framer Motion v11+, import from 'motion/react')
+
+Runtime deps:
+  next, react, react-dom, suncalc, mapbox-gl, @types/mapbox-gl,
+  @google/generative-ai, @anthropic-ai/sdk (installed but unused — Gemini used),
+  leaflet, react-leaflet (installed but unused — replaced by Mapbox GL),
+  motion
+
+Dev deps:
+  typescript, tailwindcss, @tailwindcss/postcss, postcss, autoprefixer,
+  jest, ts-jest, jest-environment-jsdom,
+  @testing-library/react, @testing-library/jest-dom,
+  @types/jest, @types/node, @types/react, @types/react-dom,
+  @types/suncalc, @types/leaflet, eslint, eslint-config-next
+
+
+--------------------------------------------------------------------------------
+3. FOLDER STRUCTURE
+--------------------------------------------------------------------------------
+
+AeroView/
+├── src/
+│   ├── app/
+│   │   ├── layout.tsx                  Root layout (html, body, Tailwind)
+│   │   ├── page.tsx                    Server Component — loads airports.json +
+│   │   │                               pois.json server-side, passes to ClientApp
+│   │   ├── globals.css                 Tailwind @import only
+│   │   └── api/
+│   │       └── narrative/
+│   │           └── route.ts            POST handler — Gemini streaming narrative
+│   ├── components/
+│   │   ├── ClientApp.tsx               'use client' orchestrator — runs the full
+│   │   │                               pipeline, manages phase state (form →
+│   │   │                               computing → result)
+│   │   ├── InputForm.tsx               Layer 1 — airport autocomplete, date/time
+│   │   │                               UTC, 4 weight sliders, overcast toggle
+│   │   ├── MapView.tsx                 Layer 4A — Mapbox GL JS 3D map (dynamic
+│   │   │                               import, ssr:false). Animated plane,
+│   │   │                               coloured route, events, TimeSlider,
+│   │   │                               EventSidePanel
+│   │   ├── TimeSlider.tsx              Play/pause + scrubbar for map animation
+│   │   ├── EventSidePanel.tsx          Sidebar showing flight events with
+│   │   │                               past/active/upcoming state
+│   │   ├── ResultScreen.tsx            Layer 5 — assembles all result UI:
+│   │   │                               SeatBadge + Windows + EventLists +
+│   │   │                               MapView + NarrativeCard
+│   │   ├── SeatBadge.tsx               Winner badge with confidence % + score bar
+│   │   ├── EventList.tsx               Per-side scored event list with icons
+│   │   ├── WindowMockup.tsx            CSS oval airplane window shape
+│   │   └── NarrativeCard.tsx           Streaming Gemini text display
+│   ├── lib/
+│   │   ├── constants.ts                Single source of truth for all numbers
+│   │   ├── geodesic.ts                 Layer 2A — pure geodesic math
+│   │   ├── solar.ts                    Layer 2B — pure solar + POI math
+│   │   └── recommend.ts               Layer 3 — pure scoring engine
+│   ├── types/
+│   │   ├── index.ts                    Re-exports all interfaces
+│   │   └── globals.d.ts               declare module '*.css' (manual scaffold fix)
+│   └── data/
+│       ├── airports.json               ~1150 AirportRecord entries
+│       └── pois.json                   ~156 POIRecord entries
+├── __tests__/
+│   ├── geodesic.test.ts                10 tests — all passing
+│   ├── solar.test.ts                   14 tests — all passing
+│   ├── recommend.test.ts               12 tests — all passing
+│   ├── InputForm.test.tsx              6 tests  — all passing
+│   ├── MapView.test.tsx                6 tests  — all passing (Mapbox mocked)
+│   ├── narrative.test.ts               5 tests  — all passing (Gemini mocked)
+│   ├── ResultScreen.test.tsx           6 tests  — all passing
+│   └── integration.test.ts             4 tests  — all passing (full pipeline)
+├── docs/
+│   ├── task_plan.md                    Master checklist (all phases marked [x])
+│   ├── schema.md                       TypeScript interfaces — source of truth
+│   ├── progress.md                     Session log + app flow diagram
+│   ├── error.md                        Error log + change log
+│   ├── findings.md                     Library gotchas + design decisions
+│   └── testcases.md                    All test cases with pass/fail status
+├── CLAUDE.md                           AI assistant rules and layer map
+├── .env.example                        Placeholder for all secrets
+├── .env.local                          Actual secrets (gitignored)
+├── jest.config.ts
+├── tsconfig.json
+├── tsconfig.jest.json                  Separate Jest TS config (commonjs, jsx)
+├── next.config.ts
+├── tailwind.config.ts
+├── context.txt                         ← THIS FILE
+└── tmp/                                Scratch space (gitignored)
+
+
+--------------------------------------------------------------------------------
+4. DATA FLOW — END TO END
+--------------------------------------------------------------------------------
+
+[Browser — Client Side]
+
+1. User fills InputForm.tsx
+     - Searches airports by IATA / city / name (min 3 chars, max 8 results)
+     - Sets departure date + time (stored as UTC ISO string)
+     - Sets 4 preference weights: sunrise, sunset, landscape, avoidSun (-2 to 3)
+     - Toggles isOvercast (reduces all scores by 80%)
+
+2. ClientApp.tsx receives FlightInput and runs the pipeline:
+
+   a. greatCircleWaypoints(origin, destination, departureUTC)
+        → WaypointData[] — one point every 50 km along the great circle
+        → Each point has: lat, lon, bearingDeg, cumulativeKm, utcTime
+        → Solar fields initialised to 0/null/[]
+
+   b. enrichWaypointsWithSolar(rawWaypoints, pois)
+        → WaypointData[] — same array, solar fields filled in:
+        → solarAzimuthDeg, solarElevDeg, isHorizonEvent, nearbyPOIs
+
+   c. computeVerdict(enrichedWaypoints, preferences)
+        → SeatVerdict { winner, confidence, leftScore, rightScore,
+                        leftEvents, rightEvents, flightDurationMin }
+
+3. ResultScreen.tsx renders:
+     - SeatBadge (winner + confidence)
+     - Two WindowMockup (left + right, highlighted per winner)
+     - Two EventList (left events / right events)
+     - MapView (dynamic import, ssr:false) — Mapbox 3D animated map
+     - NarrativeCard — fetches POST /api/narrative (streaming Gemini text)
+
+[Server — API Route]
+
+4. POST /api/narrative receives { verdict: SeatVerdict }
+     - Builds a prompt summarising the route verdict
+     - Calls Gemini 2.5 Flash with streaming
+     - Returns ReadableStream<string> as text/plain
+     - NarrativeCard reads the stream chunk-by-chunk and appends to display
+
+
+--------------------------------------------------------------------------------
+5. ALL TYPESCRIPT INTERFACES
+--------------------------------------------------------------------------------
+
+--- Data Layer ---
+
+interface AirportRecord {
+  iata: string;          // "JFK"
+  name: string;          // "John F. Kennedy International"
+  city: string;          // "New York"
+  country: string;       // "United States"
+  lat: number;
+  lon: number;
+  timezone: string;      // IANA: "America/New_York"
+  utcOffsetMin: number;  // standard (non-DST) UTC offset e.g. -300
+}
+
+interface POIRecord {
+  id: string;            // slug: "grand-canyon"
+  name: string;          // "Grand Canyon"
+  lat: number;
+  lon: number;
+  category: 'landmark' | 'mountain' | 'island' | 'city' | 'natural' | 'water';
+  minVisibilityKm: number;
+}
+
+--- User Input ---
+
+interface UserPreferences {
+  weights: {
+    sunrise: number;    // -2 to 3
+    sunset: number;
+    landscape: number;
+    avoidSun: number;
+  };
+  isOvercast: boolean;
+}
+
+interface FlightInput {
+  origin: AirportRecord;
+  destination: AirportRecord;
+  departureUTC: string;    // ISO 8601 UTC e.g. "2024-06-21T08:00:00Z"
+  preferences: UserPreferences;
+}
+
+--- Geodesic Layer ---
+
+interface WaypointData {
+  index: number;
+  lat: number;
+  lon: number;
+  bearingDeg: number;          // 0–360, north=0, east=90 (toward NEXT waypoint)
+  cumulativeKm: number;
+  utcTime: Date;
+  solarAzimuthDeg: number;     // 0–360 north-clockwise (Phase 2 fills this)
+  solarElevDeg: number;        // -90 to +90 (Phase 2 fills this)
+  isHorizonEvent: 'sunrise' | 'sunset' | null;  // Phase 2 fills this
+  nearbyPOIs: POIResult[];     // Phase 2 fills this
+}
+
+--- Solar Layer ---
+
+interface SolarPosition {
+  solarAzimuthDeg: number;   // north-clockwise
+  solarElevDeg: number;
+}
+
+interface POIResult {
+  poi: POIRecord;
+  distanceKm: number;
+  bearingFromPlane: number;  // 0–360 north-clockwise from plane to POI
+}
+
+--- Recommendation Layer ---
+
+interface ScoredEvent {
+  type: 'sunrise' | 'sunset' | 'landmark' | 'city';
+  name: string;
+  side: 'left' | 'right';
+  timeMinFromDeparture: number;
+  solarElevDeg: number;
+  score: number;
+}
+
+interface SeatVerdict {
+  winner: 'left' | 'right' | 'either';
+  confidence: number;         // 0–1
+  leftScore: number;
+  rightScore: number;
+  leftEvents: ScoredEvent[];
+  rightEvents: ScoredEvent[];
+  flightDurationMin: number;
+}
+
+--- API Layer ---
+
+// POST /api/narrative body:
+interface NarrativeRequest {
+  verdict: SeatVerdict;
+}
+// Response: ReadableStream<string> — text/plain, streamed chunks
+
+
+--------------------------------------------------------------------------------
+6. CONSTANTS (src/lib/constants.ts)
+--------------------------------------------------------------------------------
+
+EARTH_RADIUS_KM         = 6371       Earth mean radius
+CRUISE_SPEED_KMH        = 900        Assumed cruise speed for timing
+WAYPOINT_STEP_KM        = 50         Great-circle sampling interval
+POI_RADIUS_KM           = 250        Scan radius per waypoint for nearby POIs
+TWILIGHT_ELEV_DEG       = -6         Below this elev → astronomical twilight (score 0)
+WEATHER_CLEAR_FACTOR    = 1.0        Score multiplier when clear
+WEATHER_OVERCAST_FACTOR = 0.2        Score multiplier when overcast (80% reduction)
+MAX_WEIGHT              = 3          Max value for preference sliders
+MIN_WEIGHT              = -2         Min value for preference sliders
+LOW_CONFIDENCE_THRESHOLD = 0.1       If |L-R|/(|L|+|R|) < this → winner='either'
+MAX_POIS_PER_WAYPOINT   = 5          Cap on nearbyPOIs per waypoint
+AUTOCOMPLETE_MIN_CHARS  = 3          Min chars before airport dropdown shows
+AUTOCOMPLETE_MAX_RESULTS = 8         Max rows in airport dropdown
+
+
+--------------------------------------------------------------------------------
+7. LAYER IMPLEMENTATIONS IN DETAIL
+--------------------------------------------------------------------------------
+
+=== Layer 2A — geodesic.ts ===
+
+haversineKm(lat1, lon1, lat2, lon2) → number
+  Standard haversine formula. Returns great-circle distance in km.
+
+bearingDeg(lat1, lon1, lat2, lon2) → number [0, 360)
+  Forward azimuth from point 1 to point 2.
+  y = sin(Δλ) * cos(φ2)
+  x = cos(φ1)*sin(φ2) - sin(φ1)*cos(φ2)*cos(Δλ)
+  return (atan2(y, x) * 180/π + 360) % 360
+
+intermediatePoint(lat1, lon1, lat2, lon2, fraction) → {lat, lon}
+  SLERP (spherical linear interpolation), not linear interpolation.
+  Produces true great-circle intermediate points.
+
+greatCircleWaypoints(origin, destination, departureUTC) → WaypointData[]
+  - Samples every WAYPOINT_STEP_KM along the great circle
+  - Antimeridian fix: if consecutive lon diff > 180°, adjust by ±360
+  - For each waypoint, computes bearing TOWARD next waypoint
+  - CRITICAL FIX: nextPt.lon is also antimeridian-corrected relative to
+    current lon before calling bearingDeg (prevents wrong bearings on
+    Pacific/antimeridian routes like LAX→SYD)
+  - Solar fields initialised to 0/null/[] — enriched in Phase 2
+
+=== Layer 2B — solar.ts ===
+
+toNorthClockwiseDeg(rawAzimuthRad) → number
+  SunCalc returns azimuth in radians from SOUTH, clockwise.
+  Convert: ((rawAzimuthRad + π) * 180/π) % 360
+  This is applied to EVERY SunCalc azimuth read — no exceptions.
+
+getSolarPosition(lat, lon, date) → SolarPosition
+  Wraps SunCalc.getPosition(). Returns { solarAzimuthDeg, solarElevDeg }.
+
+detectHorizonEvent(prevElevDeg, currElevDeg) → 'sunrise' | 'sunset' | null
+  prevElevDeg < 0 and currElevDeg >= 0 → 'sunrise'
+  prevElevDeg >= 0 and currElevDeg < 0 → 'sunset'
+
+elevationMultiplier(elevDeg) → number
+  Quality multiplier based on sun position:
+  < TWILIGHT_ELEV_DEG → 0 (too dark, not scored)
+  < 0                 → proportional 0→1 mapping
+  >= 0                → 1.0
+
+scanNearbyPOIs(lat, lon, bearing, pois) → POIResult[]
+  Scans pois.json for entries within POI_RADIUS_KM.
+  Sorts ascending by distanceKm.
+  Caps at MAX_POIS_PER_WAYPOINT.
+  Returns array of { poi, distanceKm, bearingFromPlane }.
+
+enrichWaypointsWithSolar(rawWaypoints, pois) → WaypointData[]
+  IMPORTANT: Uses a for-loop (NOT .map()) so each iteration reads
+  prevElevDeg from the ALREADY-ENRICHED result array. Using .map()
+  would read the original solarElevDeg=0 for all prev entries, causing
+  false sunrise/sunset detections (especially in polar night tests).
+
+=== Layer 3 — recommend.ts ===
+
+sideOfPlane(planeBearing, objectAzimuth) → 'left' | 'right'
+  relativeBearing = (objectAzimuth - planeBearing + 360) % 360
+  [0, 180)  → 'right'  (object is to the right of the plane)
+  [180, 360) → 'left'  (object is to the left of the plane)
+
+scoreSolarEvent(type, elevDeg, preferences) → number
+  score = weights[type] * elevationMultiplier(elevDeg) * weatherFactor
+
+scoreLandmark(distanceKm, preferences) → number
+  Decreasing score as distance increases.
+  Beyond POI_RADIUS_KM → 0.
+
+computeVerdict(enrichedWaypoints, preferences) → SeatVerdict
+  Iterates all waypoints:
+    - Horizon events → scoreSolarEvent, sideOfPlane, push to leftEvents/rightEvents
+    - avoidSun → penalises the side the sun is on (not bonus to other side)
+    - POIs → scoreLandmark, sideOfPlane, push to leftEvents/rightEvents
+  POI DEDUP FIX: seenPoiIds = new Set<string>() — skips any POI that already
+    appeared in events. Each POI contributes exactly ONCE regardless of how
+    many consecutive waypoints it's within POI_RADIUS_KM of. This prevents
+    landmarks like Manhattan or Aurora zones from creating 5-8 duplicate
+    markers on the map and over-inflating the score.
+  winner='either' when |leftScore - rightScore| / total < LOW_CONFIDENCE_THRESHOLD
+
+=== Layer 4A — MapView.tsx ===
+
+Must be dynamically imported in ResultScreen:
+  const MapView = dynamic(() => import('./MapView'), { ssr: false })
+  Mapbox GL JS requires browser DOM — will crash on SSR.
+
+Map config:
+  style: 'mapbox://styles/mapbox/dark-v11'
+  pitch: 50, bearing: -10, antialias: true
+  3D terrain: source 'mapbox-dem' + setTerrain({ exaggeration: 1.5 })
+
+Layers (in order, bottom to top):
+  1. route-colored  — all segments coloured by solarElevDeg:
+                      night(<-6°)='#1e3a5f', twilight='#f97316', day='#facc15'
+                      line-width: 3, line-opacity: 0.75
+  2. route-dashed   — subtle dashed overlay, line-opacity: 0.45
+  3. flown-glow     — wide blurred blue glow for traveled path
+  4. flown-core     — crisp light-blue line for traveled path
+
+Markers:
+  - Origin: blue Mapbox default marker + popup
+  - Destination: indigo Mapbox default marker + popup
+  - Verdict events: emoji icons (🌅🌇🏙️📍) positioned at the waypoint closest
+    to each event's timeMinFromDeparture. Popup shows name + left/right side.
+  - Plane: SVG top-down airplane (nose at top = north), two-layer structure
+
+Plane marker TWO-LAYER structure (critical):
+  planeOuter (div) → passed to mapboxgl.Marker({ anchor: 'center' })
+    Mapbox writes positioning transform here: translate(Xpx, Ypx)
+    NEVER touch planeOuter.style.transform directly.
+  planeInner (div, child of planeOuter) → contains the SVG
+    We write rotation ONLY here: firstElementChild.style.transform = rotate(θ)
+
+Bearing correction formula:
+  θ = wp.bearingDeg - map.getBearing()
+  Reason: CSS rotate(θ) is from screen-up, not from north. map.getBearing()
+  is the compass direction currently pointing up. Subtracting it keeps the
+  plane aligned with the route regardless of map rotation by the user.
+  map.on('rotate', ...) listener re-applies this correction whenever the
+  user rotates the map. Uses currentIndexRef (not state) to avoid stale closures.
+
+Time-of-day fog (fogForElev):
+  solarElev < -12°: near-black sky, stars 95%
+  -12° to -6°:      dark blue, stars 65%
+  -6° to 0°:        warm orange twilight, stars 20%
+  0° to 15°:        golden morning/evening sky
+  > 15°:            bright blue day sky, no stars
+  Called on every currentIndex tick via map.setFog().
+
+Animation:
+  setInterval every 80ms → setCurrentIndex(prev + 1)
+  On each currentIndex change:
+    planeRef.setLngLat([wp.lon, wp.lat])  — moves plane
+    planeInner.style.transform = rotate(bearingDeg - mapBearing)  — rotates plane
+    flownSource.setData(waypoints.slice(0, currentIndex+1))  — grows flown path
+    map.setFog(fogForElev(wp.solarElevDeg))  — updates sky
+
+=== Layer 4B — /api/narrative/route.ts ===
+
+POST /api/narrative
+  Receives: { verdict: SeatVerdict }
+  Validates with isValidRequest() before calling Gemini
+  Model: gemini-2.5-flash
+  Returns: new Response(ReadableStream, { 'Content-Type': 'text/plain' })
+  Error: 400 for bad request, 500 for Gemini failure
+
+NarrativeCard.tsx:
+  fetch('/api/narrative', { method: 'POST', body: JSON.stringify({ verdict }) })
+  Uses response.body.getReader() to read stream chunks
+  Uses cancelled flag to prevent setState after unmount
+
+=== Layer 5 — ResultScreen.tsx ===
+
+Assembles: SeatBadge + WindowMockup (×2) + EventList (×2) + MapView + NarrativeCard
+topEvent() helper picks highest-scoring event per side for WindowMockup
+MapView has no wrapping height div — it manages its own height (450px map + slider)
+
+=== TimeSlider.tsx ===
+
+FIXED BUG: The visual bar div and the invisible <input type="range"> must share
+a common `position: relative` parent. Without it, the `absolute`-positioned input
+floats away from the track, making click-to-seek not work.
+
+Correct structure:
+  <div className="relative h-4 flex items-center">
+    <div className="w-full h-2 ... pointer-events-none">   {/* visual bar */}
+      <div style={{ width: `${pct}%` }} />                 {/* fill */}
+    </div>
+    <input type="range" className="absolute inset-0 ..." />  {/* click target */}
+  </div>
+
+pointer-events-none on the visual bar ensures clicks fall through to the input.
+
+=== EventSidePanel.tsx ===
+
+Shows verdict.leftEvents + verdict.rightEvents, sorted by timeMinFromDeparture.
+For each event, computes diff = event.timeMinFromDeparture - currentMin:
+  diff < -5          → past (grayed, ✓ icon)
+  |diff| <= 5        → active ("NOW — look left/right!", highlighted)
+  5 < diff <= 30     → upcoming (shows countdown)
+  diff > 30          → future (dimmed)
+
+
+--------------------------------------------------------------------------------
+8. ENVIRONMENT VARIABLES
+--------------------------------------------------------------------------------
+
+NEXT_PUBLIC_MAPBOX_TOKEN=  (client-side, required for map)
+  Get from: account.mapbox.com → tokens
+
+GEMINI_API_KEY=            (server-side, required for narrative)
+  Get from: aistudio.google.com/app/apikey
+  IMPORTANT: Must be AI Studio key (not Google Cloud Console key).
+  Google Cloud Console keys have billing disabled by default → 429 errors.
+  AI Studio keys work immediately on free tier.
+
+Both defined in .env.local (gitignored). Placeholders in .env.example.
+
+
+--------------------------------------------------------------------------------
+9. TESTING APPROACH
+--------------------------------------------------------------------------------
+
+Jest environment:
+  Default (global): node  — for lib/*.ts tests (pure functions, no DOM)
+  Per-file override: @jest-environment jsdom docblock — for component tests
+
+Config files:
+  jest.config.ts        — root config, uses tsconfig.jest.json
+  tsconfig.jest.json    — separate TS config: module=commonjs, jsx=react-jsx,
+                          rootDir=., ignoreDeprecations=5.0
+
+Mocking strategy:
+  mapbox-gl             — fully mocked in MapView.test.tsx (WebGL not in jsdom)
+  @google/generative-ai — fully mocked in narrative.test.ts
+  next/dynamic          — mocked in ResultScreen.test.tsx to render MapView inline
+
+All 64 tests pass. Run with: npm run test  or  npx jest --no-coverage
+
+
+--------------------------------------------------------------------------------
+10. BUGS FOUND AND FIXED
+--------------------------------------------------------------------------------
+
+B1 — solar.ts: polar-night false sunset (Phase 2)
+  .map() reads original solarElevDeg=0 for prev waypoint → false 'sunset'.
+  Fix: switched to for-loop reading from already-enriched result array.
+
+B2 — jest.config.ts: wrong key name (Phase 4)
+  Used 'setupFilesAfterFramework' instead of 'setupFilesAfterEnv'.
+  Fix: corrected key name.
+
+B3 — tsconfig.jest.json: missing JSX transform (Phase 4)
+  ts-jest couldn't compile TSX without "jsx": "react-jsx".
+  Fix: added jsx key.
+
+B4 — Gemini API key type (Phase 6)
+  Google Cloud Console keys → 429 errors (billing disabled, limit:0).
+  Fix: user obtained AI Studio key from aistudio.google.com.
+
+B5 — Gemini model 404 (Phase 6)
+  gemini-1.5-flash and gemini-2.0-flash not available on AI Studio new accounts.
+  Fix: used gemini-2.5-flash.
+
+B6 — Stale .next build cache (Phase 8)
+  "Cannot find module './873.js'" runtime error after switching from Leaflet to Mapbox.
+  Fix: rm -rf .next && npm run dev
+
+B7 — MapView.tsx: plane transform overwrites Mapbox position (Mapbox migration)
+  Setting planeEl.style.transform = 'rotate(...)' overwrote Mapbox's
+  positioning translate(), making the plane jump off-map and setLngLat appear
+  to have no effect.
+  Fix: two-layer element structure — rotate only planeInner (child), never planeOuter.
+
+B8 — MapView.tsx: SVG arrow shape not a plane (Mapbox migration)
+  Original path M12,2 L7,15 L10,13 ... created an arrowhead, not an airplane.
+  Fix: rewrote SVG path to proper top-down airplane silhouette:
+  M12,1 L13,9 L22,13 L13,15 L13.5,21 L12,20 L10.5,21 L11,15 L2,13 L11,9 Z
+
+B9 — recommend.ts: duplicate POI events (multi-waypoint overlap)
+  POI_RADIUS_KM=250, WAYPOINT_STEP_KM=50 → same POI in 5+ consecutive
+  waypoints → 5+ duplicate ScoredEvents + 5+ map markers + inflated score.
+  Fix: seenPoiIds = new Set<string>() — skip if poi.id already seen.
+
+B10 — TimeSlider.tsx: click-to-seek not working
+  <input type="range"> had position:absolute but parent had no position:relative.
+  Input floated relative to distant ancestor, misaligned from visual track.
+  Fix: wrap track + input in a shared position:relative container.
+  pointer-events-none on visual bar ensures clicks reach the input.
+
+B11 — MapView.tsx: plane bearing wrong on rotated map
+  rotate(bearingDeg) rotates from screen-up, not from north.
+  With map bearing=-10°, plane appears 10° off the route.
+  Fix: rotate(bearingDeg - map.getBearing())
+  Also added map.on('rotate',...) listener using currentIndexRef to update
+  rotation whenever user rotates the map (avoids stale closure issue).
+
+B12 — geodesic.ts: antimeridian bearing wrong for Pacific routes
+  waypoint lon is antimeridian-adjusted (e.g. -200) but nextPt.lon is raw
+  SLERP value (e.g. 170). Δλ = 370° → completely wrong bearing.
+  Fix: apply same ±360 antimeridian correction to nextLon before bearingDeg().
+
+
+--------------------------------------------------------------------------------
+11. PROJECT RULES (from CLAUDE.md)
+--------------------------------------------------------------------------------
+
+1.  Never add anything unapproved — no library, API, or architectural decision
+    without explicit user approval.
+2.  Approval gate before coding — present interfaces/payloads. Wait for "approved".
+3.  Present before finalizing — show result, get sign-off before marking done.
+4.  Test API connections first — write standalone test in ./tmp/, confirm it works.
+5.  Secrets only in .env.local — never hardcode, never expose to client.
+6.  Temp files in ./tmp/ — logs, debug, test scripts. Folder is gitignored.
+7.  Update docs after every subtask — mark task_plan.md [x] only after tests pass.
+8.  Error handling protocol — read full stack trace, fix only what error points to.
+9.  Schema is source of truth — update docs/schema.md FIRST when any type changes.
+10. Never mark done without tests passing.
+11. Layer purity — src/lib/ = pure functions only (no React, no side effects).
+    src/components/ = zero math/business logic.
+12. No magic numbers — every constant in src/lib/constants.ts.
+
+
+--------------------------------------------------------------------------------
+12. KEY ARCHITECTURE DECISIONS
+--------------------------------------------------------------------------------
+
+1. Server Component for data loading
+   page.tsx is a Server Component that imports airports.json and pois.json.
+   These stay out of the client JS bundle. Passed as props to ClientApp.
+
+2. ClientApp orchestrates the pipeline
+   ClientApp.tsx ('use client') runs all three lib functions in sequence on
+   the client. No API routes for geodesic/solar/recommend — pure client-side.
+   Only the LLM narrative uses a server API route.
+
+3. Mapbox GL JS instead of Leaflet
+   Replaced in later development for 3D terrain, fog/atmosphere, and WebGL
+   rendering quality. react-leaflet and leaflet packages still installed but unused.
+
+4. Dynamic import for MapView
+   next/dynamic(() => import('./MapView'), { ssr: false }) — Mapbox GL JS
+   accesses window/document on import. SSR would crash Next.js build.
+
+5. Streaming LLM narrative
+   ReadableStream from the API route allows text to appear word-by-word.
+   NarrativeCard reads chunks via response.body.getReader().
+
+6. SunCalc azimuth conversion
+   SunCalc returns azimuth from SOUTH, clockwise (radians).
+   toNorthClockwiseDeg = ((rawRad + π) * 180/π) % 360
+   Applied everywhere without exception.
+
+7. For-loop not map() in enrichWaypointsWithSolar
+   Each waypoint's horizon event detection needs the PREVIOUS waypoint's
+   already-enriched solarElevDeg. .map() gives original (all 0s). for-loop
+   reads from the already-built result array.
+
+8. Two-layer plane marker
+   Mapbox GL JS owns the transform of its custom element's root div.
+   We must only touch child element transforms for rotation.
+
+9. seenPoiIds dedup in computeVerdict
+   Without this, a POI near the route gets 1 ScoredEvent per waypoint (5+
+   duplicates for WAYPOINT_STEP=50 and POI_RADIUS=250). Dedup by poi.id
+   keeps scoring and map markers clean.
+
+10. Map bearing correction for plane rotation
+    CSS rotate() is relative to screen-up. Map bearing offset must be
+    subtracted. Also listen to map rotate events for real-time correction.
+
+
+--------------------------------------------------------------------------------
+13. CURRENT STATUS (as of 2026-04-13)
+--------------------------------------------------------------------------------
+
+ALL 8 PHASES COMPLETE:
+  Phase 0 — Scaffold                [x]
+  Phase 1 — Geodesic engine         [x]
+  Phase 2 — Solar engine            [x]
+  Phase 3 — Recommendation engine   [x]
+  Phase 4 — Input form              [x]
+  Phase 5 — Map (Mapbox GL JS)      [x]  (was Leaflet, replaced)
+  Phase 6 — LLM narrative (Gemini)  [x]  (was Anthropic, migrated)
+  Phase 7 — Result screen UI        [x]
+  Phase 8 — Integration             [x]
+
+Test suite: 64/64 passing
+TypeScript:  0 errors (npx tsc --noEmit)
+Build:       npx next build succeeds
+
+Post-phase bug fixes applied:
+  B7, B8 — Plane marker two-layer + SVG shape
+  B9     — POI deduplication
+  B10    — TimeSlider click-to-seek
+  B11    — Map bearing correction + rotate listener
+  B12    — Antimeridian bearing fix in geodesic.ts
+
+
+--------------------------------------------------------------------------------
+14. HOW TO RUN
+--------------------------------------------------------------------------------
+
+# Install dependencies
+npm install
+
+# Create .env.local (copy .env.example and fill in values)
+cp .env.example .env.local
+# Edit .env.local:
+#   NEXT_PUBLIC_MAPBOX_TOKEN=pk.eyJ1...   (from account.mapbox.com)
+#   GEMINI_API_KEY=AIza...               (from aistudio.google.com/app/apikey)
+
+# Dev server
+npm run dev        # runs on http://localhost:3000
+
+# Tests
+npm run test       # or: npx jest --no-coverage
+
+# Type check
+npm run typecheck  # npx tsc --noEmit
+
+# Production build
+npm run build
+npm run start
+
+================================================================================
+END OF CONTEXT
+================================================================================
