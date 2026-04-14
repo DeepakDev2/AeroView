@@ -90,8 +90,8 @@ test('TC-P4-T5: submit button disabled until all required fields are filled', ()
   fireEvent.mouseDown(screen.getByText(/LHR/));
   expect(btn).toBeDisabled();
 
-  // Set date — now should be enabled
-  fireEvent.change(screen.getByLabelText('Departure date'), { target: { value: '2024-06-21' } });
+  // Set date (far future so the "≥ 1 hour from now" check passes) — now should be enabled
+  fireEvent.change(screen.getByLabelText('Departure date'), { target: { value: '2035-06-21' } });
   expect(btn).not.toBeDisabled();
 });
 
@@ -109,8 +109,8 @@ test('TC-P4-T6: onSubmit receives correct FlightInput on form submission', () =>
   fireEvent.change(screen.getByLabelText('Destination airport'), { target: { value: 'Lon' } });
   fireEvent.mouseDown(screen.getByText(/LHR/));
 
-  // Fill date
-  fireEvent.change(screen.getByLabelText('Departure date'), { target: { value: '2024-06-21' } });
+  // Fill date (far future; JFK utcOffsetMin=-300, so local 00:00 → UTC 05:00)
+  fireEvent.change(screen.getByLabelText('Departure date'), { target: { value: '2035-06-21' } });
 
   // Submit
   fireEvent.click(screen.getByRole('button', { name: /find best seat/i }));
@@ -119,7 +119,8 @@ test('TC-P4-T6: onSubmit receives correct FlightInput on form submission', () =>
   const arg: FlightInput = handleSubmit.mock.calls[0][0];
   expect(arg.origin.iata).toBe('JFK');
   expect(arg.destination.iata).toBe('LHR');
-  expect(arg.departureUTC).toBe('2024-06-21T00:00:00Z');
+  // JFK is UTC-5 (utcOffsetMin=-300): local 00:00 → UTC 05:00
+  expect(arg.departureUTC).toBe('2035-06-21T05:00:00Z');
   expect(arg.preferences).toBeDefined();
   expect(typeof arg.preferences.weights.sunrise).toBe('number');
 });

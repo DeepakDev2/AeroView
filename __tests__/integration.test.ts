@@ -82,3 +82,77 @@ test('TC-P8-T4: computeVerdict flightDurationMin ≈ 370 min for JFK→LHR', () 
   expect(verdict.flightDurationMin).toBeGreaterThan(340);
   expect(verdict.flightDurationMin).toBeLessThan(400);
 });
+
+// ── TC-P8-T5: Performance — full pipeline < 500 ms ───────────────────────────
+
+test('TC-P8-T5: full pipeline JFK→LHR completes in < 500 ms', () => {
+  const start = performance.now();
+  const raw      = greatCircleWaypoints(JFK, LHR, DEPARTURE);
+  const enriched = enrichWaypointsWithSolar(raw, pois);
+  computeVerdict(enriched, PREFS);
+  const elapsed = performance.now() - start;
+
+  // Log for visibility; assert hard cap
+  console.log(`Pipeline time: ${elapsed.toFixed(1)} ms (${raw.length} waypoints)`);
+  expect(elapsed).toBeLessThan(500);
+});
+
+// ── TC-P8-T6: Route LHR → JFK (afternoon eastbound) ─────────────────────────
+
+test('TC-P8-T6: LHR→JFK produces valid verdict', () => {
+  const SYD = airports.find((a) => a.iata === 'SYD')!; // used below; check fixture here too
+  expect(SYD).toBeDefined();
+
+  const raw      = greatCircleWaypoints(LHR, JFK, '2024-06-21T12:00:00Z');
+  const enriched = enrichWaypointsWithSolar(raw, pois);
+  const verdict  = computeVerdict(enriched, PREFS);
+
+  expect(['left', 'right', 'either']).toContain(verdict.winner);
+  expect(verdict.flightDurationMin).toBeGreaterThan(300);
+  expect(verdict.flightDurationMin).toBeLessThan(450);
+  // No consecutive lon jump > 180° (antimeridian safety)
+  for (let i = 1; i < raw.length; i++) {
+    expect(Math.abs(raw[i].lon - raw[i - 1].lon)).toBeLessThan(180);
+  }
+});
+
+// ── TC-P8-T7: Route SYD → LAX (transpacific, antimeridian crossing) ──────────
+
+test('TC-P8-T7: SYD→LAX crosses antimeridian without map artifact', () => {
+  const SYD = airports.find((a) => a.iata === 'SYD')!;
+  const LAX = airports.find((a) => a.iata === 'LAX')!;
+
+  const raw      = greatCircleWaypoints(SYD, LAX, '2024-12-21T22:00:00Z');
+  const enriched = enrichWaypointsWithSolar(raw, pois);
+  const verdict  = computeVerdict(enriched, PREFS);
+
+  expect(['left', 'right', 'either']).toContain(verdict.winner);
+  // SYD→LAX ≈ 12,074 km / 900 kmh ≈ 805 min
+  expect(verdict.flightDurationMin).toBeGreaterThan(750);
+  expect(verdict.flightDurationMin).toBeLessThan(870);
+  // Antimeridian: no consecutive lon jump > 180°
+  for (let i = 1; i < raw.length; i++) {
+    expect(Math.abs(raw[i].lon - raw[i - 1].lon)).toBeLessThan(180);
+  }
+});
+
+// ── TC-P8-T8: Route DEL → DXB (short route) ──────────────────────────────────
+
+test('TC-P8-T8: DEL→DXB short route produces verdict without crash', () => {
+  const DEL = airports.find((a) => a.iata === 'DEL')!;
+  const DXB = airports.find((a) => a.iata === 'DXB')!;
+
+  const raw      = greatCircleWaypoints(DEL, DXB, '2024-06-21T06:00:00Z');
+  const enriched = enrichWaypointsWithSolar(raw, pois);
+  const verdict  = computeVerdict(enriched, PREFS);
+
+  expect(['left', 'right', 'either']).toContain(verdict.winner);
+  // DEL→DXB ≈ 2,200 km / 900 kmh ≈ 147 min
+  expect(verdict.flightDurationMin).toBeGreaterThan(120);
+  expect(verdict.flightDurationMin).toBeLessThan(200);
+  // All waypoints have valid solar data
+  for (const wp of enriched) {
+    expect(wp.solarElevDeg).toBeGreaterThanOrEqual(-90);
+    expect(wp.solarElevDeg).toBeLessThanOrEqual(90);
+  }
+});

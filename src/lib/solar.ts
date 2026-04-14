@@ -148,3 +148,75 @@ export function enrichWaypointsWithSolar(
 
   return enriched;
 }
+
+// ── 2.7 getSubSolarPoint ─────────────────────────────────────────────────────
+
+/**
+ * Returns the geographic point (lat, lon) directly beneath the sun — i.e. the
+ * location where the sun is at zenith — for a given UTC instant.
+ *
+ * Sub-solar latitude  = solar declination (depends on day of year).
+ * Sub-solar longitude = -(UTC hours offset from solar noon) × 15°/h
+ *                       (at UTC 12:00 the sun is overhead at 0° / Greenwich).
+ */
+export function getSubSolarPoint(date: Date): { lat: number; lon: number } {
+  // Day of year (1-based)
+  const startOfYear = Date.UTC(date.getUTCFullYear(), 0, 1);
+  const dayOfYear   = (date.getTime() - startOfYear) / 86_400_000 + 1;
+
+  // Solar declination via simple sinusoidal approximation (±23.45°)
+  const declRad = (23.45 * Math.PI / 180) * Math.sin((2 * Math.PI / 365) * (dayOfYear - 81));
+
+  // Sub-solar longitude: 15°/h west of the Greenwich meridian at UTC noon
+  const utcHours = date.getUTCHours() + date.getUTCMinutes() / 60 + date.getUTCSeconds() / 3600;
+  let sunLon = (12 - utcHours) * 15;
+  // Normalise to [-180, 180]
+  sunLon = ((sunLon + 180) % 360 + 360) % 360 - 180;
+
+  return { lat: (declRad * 180) / Math.PI, lon: sunLon };
+}
+
+// ── 2.8 getNightPolygonCoords ────────────────────────────────────────────────
+
+/**
+ * Returns a GeoJSON polygon ring (exterior coordinates only) that covers the
+ * night hemisphere at the given UTC time.
+ *
+ * Algorithm:
+ *  - The solar terminator satisfies: tan(lat) = −cos(HA) / tan(decl)
+ *    where HA = (lon − sunLon) in radians, decl = solar declination.
+ *  - We sample every 2° of longitude to trace the terminator line.
+ *  - We close the polygon around the pole that is currently in winter darkness.
+ *
+ * Equinox safety: declination is clamped to ±0.5° minimum to avoid division-
+ * by-zero; the resulting tiny distortion is visually imperceptible.
+ */
+export function getNightPolygonCoords(date: Date): [number, number][] {
+  const { lat: sunLat, lon: sunLon } = getSubSolarPoint(date);
+
+  // Clamp decl away from zero to prevent tan(decl) blow-up at equinox
+  const MIN_DECL_DEG = 0.5;
+  const clampedDecl  = sunLat >= 0
+    ? Math.max(sunLat, MIN_DECL_DEG)
+    : Math.min(sunLat, -MIN_DECL_DEG);
+  const declRad = (clampedDecl * Math.PI) / 180;
+
+  // Trace the terminator from lon=−180 to lon=+180
+  const terminator: [number, number][] = [];
+  for (let i = 0; i <= 180; i++) {
+    const lon   = -180 + i * 2;
+    const haRad = ((lon - sunLon) * Math.PI) / 180;
+    const latRad = Math.atan(-Math.cos(haRad) / Math.tan(declRad));
+    terminator.push([lon, (latRad * 180) / Math.PI]);
+  }
+
+  // The pole in the winter (night) hemisphere closes the polygon
+  const poleY: number = sunLat >= 0 ? -90 : 90;
+
+  return [
+    [-180, poleY] as [number, number],
+    ...terminator,
+    [ 180, poleY] as [number, number],
+    [-180, poleY] as [number, number],   // close ring
+  ];
+}

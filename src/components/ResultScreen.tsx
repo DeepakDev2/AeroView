@@ -38,6 +38,21 @@ function topEvent(events: ScoredEvent[]): ScoredEvent | null {
   return events.reduce((best, ev) => (ev.score > best.score ? ev : best));
 }
 
+/** Format total minutes as "6h 12m" (or "6h" when minutes are 0). */
+function formatDuration(totalMin: number): string {
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  return m === 0 ? `${h}h` : `${h}h ${m}m`;
+}
+
+/** Format a UTC ISO string as "Jun 21 2024 08:00 UTC". */
+function formatDepartureUTC(iso: string): string {
+  const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const d   = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()} ${d.getUTCFullYear()} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())} UTC`;
+}
+
 export default function ResultScreen({
   input,
   waypoints,
@@ -46,14 +61,23 @@ export default function ResultScreen({
 }: ResultScreenProps) {
   const { origin, destination, departureUTC } = input;
 
+  const durationMin = Math.round(
+    (waypoints[waypoints.length - 1].utcTime.getTime() - waypoints[0].utcTime.getTime()) / 60_000
+  );
+
   return (
     <div className="flex flex-col gap-6 w-full max-w-2xl mx-auto">
 
-      {/* Header */}
+      {/* Header — recap bar */}
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-bold text-white">
-          {origin.iata} → {destination.iata}
-        </h2>
+        <div>
+          <h2 className="text-lg font-bold text-white">
+            {origin.iata} → {destination.iata}
+          </h2>
+          <p className="text-xs text-gray-400 mt-0.5">
+            {formatDuration(durationMin)} · {formatDepartureUTC(departureUTC)}
+          </p>
+        </div>
         <button
           data-testid="reset-button"
           onClick={onReset}

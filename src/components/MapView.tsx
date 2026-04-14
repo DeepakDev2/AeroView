@@ -12,6 +12,7 @@ import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import TimeSlider from './TimeSlider';
 import EventSidePanel from './EventSidePanel';
+import { getSubSolarPoint, getNightPolygonCoords } from '@/lib/solar';
 import type { WaypointData, AirportRecord, SeatVerdict, ScoredEvent } from '@/types';
 
 // ── Props ─────────────────────────────────────────────────────────────────────
@@ -110,6 +111,7 @@ export default function MapView({
   const containerRef       = useRef<HTMLDivElement>(null);
   const mapRef             = useRef<mapboxgl.Map | null>(null);
   const planeRef           = useRef<mapboxgl.Marker | null>(null);
+  const sunMarkerRef       = useRef<mapboxgl.Marker | null>(null);
   // Ref so the map 'rotate' event handler can read the latest index without
   // a stale closure (the handler is registered once inside the init useEffect)
   const currentIndexRef    = useRef(0);
@@ -156,6 +158,43 @@ export default function MapView({
 
       // Initial atmosphere based on departure solar elevation
       map.setFog(fogForElev(waypoints[0].solarElevDeg));
+
+      // ── Night hemisphere (terminator fill) ───────────────────────────────
+      map.addSource('night', {
+        type: 'geojson',
+        data: {
+          type: 'Feature',
+          geometry: {
+            type: 'Polygon',
+            coordinates: [getNightPolygonCoords(waypoints[0].utcTime)],
+          },
+          properties: {},
+        },
+      });
+      map.addLayer({
+        id: 'night-fill',
+        type: 'fill',
+        source: 'night',
+        paint: {
+          'fill-color': '#000d1a',
+          'fill-opacity': 0.45,
+        },
+      });
+
+      // ── Sun marker ────────────────────────────────────────────────────────
+      const sunEl = document.createElement('div');
+      sunEl.innerHTML = `<svg viewBox="0 0 24 24" width="22" height="22" xmlns="http://www.w3.org/2000/svg"
+        style="filter:drop-shadow(0 0 5px rgba(251,191,36,0.8));">
+        <circle cx="12" cy="12" r="5" fill="#fbbf24"/>
+        <circle cx="12" cy="12" r="9.5" fill="none" stroke="#fbbf24" stroke-width="1.2" stroke-dasharray="2.5 2.5" opacity="0.65"/>
+      </svg>`;
+      sunEl.style.cssText = 'cursor: default; pointer-events: none;';
+
+      const { lat: sunLat0, lon: sunLon0 } = getSubSolarPoint(waypoints[0].utcTime);
+      const sunMarker = new mapboxgl.Marker({ element: sunEl, anchor: 'center' })
+        .setLngLat([sunLon0, sunLat0])
+        .addTo(map);
+      sunMarkerRef.current = sunMarker;
 
       // ── Full coloured route (solar elevation per segment) ─────────────────
       const segmentFeatures = waypoints.slice(1).map((wp, i) => ({
@@ -310,8 +349,9 @@ export default function MapView({
 
     return () => {
       map.remove();
-      mapRef.current = null;
+      mapRef.current   = null;
       planeRef.current = null;
+      sunMarkerRef.current = null;
       setMapReady(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -348,6 +388,23 @@ export default function MapView({
 
     // Update sky / atmosphere for current solar position
     map.setFog(fogForElev(wp.solarElevDeg));
+
+    // Update night terminator polygon
+    const nightSource = map.getSource('night') as mapboxgl.GeoJSONSource | undefined;
+    nightSource?.setData({
+      type: 'Feature',
+      geometry: {
+        type: 'Polygon',
+        coordinates: [getNightPolygonCoords(wp.utcTime)],
+      },
+      properties: {},
+    });
+
+    // Move sun marker to current sub-solar point
+    if (sunMarkerRef.current) {
+      const { lat: sunLat, lon: sunLon } = getSubSolarPoint(wp.utcTime);
+      sunMarkerRef.current.setLngLat([sunLon, sunLat]);
+    }
   }, [currentIndex, mapReady, waypoints]);
 
   // ── Auto-play animation ────────────────────────────────────────────────────
