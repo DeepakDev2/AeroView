@@ -22,6 +22,8 @@ interface MapViewProps {
   origin: AirportRecord;
   destination: AirportRecord;
   verdict: SeatVerdict;
+  /** When true the component fills its parent height instead of using a fixed 450px. */
+  fillHeight?: boolean;
 }
 
 // ── Route colour by solar elevation (night / twilight / day) ──────────────────
@@ -47,6 +49,68 @@ function eventIcon(type: ScoredEvent['type']): string {
   if (type === 'sunset')  return '🌇';
   if (type === 'city')    return '🏙️';
   return '📍';
+}
+
+// ── Rich event popup HTML ─────────────────────────────────────────────────────
+
+function buildEventPopupHTML(ev: ScoredEvent): string {
+  const icon  = eventIcon(ev.type);
+  const typeLabel =
+    ev.type === 'sunrise'  ? 'Sunrise'
+    : ev.type === 'sunset' ? 'Sunset'
+    : ev.type === 'city'   ? 'City / Landmark'
+    : 'Point of Interest';
+
+  const h   = Math.floor(ev.timeMinFromDeparture / 60);
+  const m   = Math.round(ev.timeMinFromDeparture % 60);
+  const timeStr = h > 0 ? `T + ${h}h ${m > 0 ? m + 'm' : ''}`.trim() : `T + ${m}m`;
+
+  const sideLabel = ev.side === 'left' ? '← Left window' : 'Right window →';
+  const seatLabel = ev.side === 'left' ? 'Seats A / B / C' : 'Seats J / K / L';
+  const sideColor = ev.side === 'left' ? '#3b82f6' : '#818cf8';
+
+  const elevStr   = `${ev.solarElevDeg > 0 ? '+' : ''}${ev.solarElevDeg.toFixed(1)}°`;
+  const showElev  = ev.type === 'sunrise' || ev.type === 'sunset';
+
+  const scorePct  = Math.min(100, Math.round((ev.score / 6) * 100)); // 6 = rough max score
+
+  return `
+    <div style="font-family:system-ui,sans-serif;min-width:190px;padding:2px 0">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+        <span style="font-size:20px;line-height:1">${icon}</span>
+        <div>
+          <div style="font-size:12px;font-weight:700;color:#0f172a;line-height:1.2">${ev.name}</div>
+          <div style="font-size:10px;color:#64748b;margin-top:1px">${typeLabel}</div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:5px;border-top:1px solid #e2e8f0;padding-top:6px">
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px">
+          <span style="color:#64748b">Window</span>
+          <span style="font-weight:700;color:${sideColor}">${sideLabel}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px">
+          <span style="color:#64748b">Seats</span>
+          <span style="font-weight:600;color:#1e293b">${seatLabel}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px">
+          <span style="color:#64748b">Visible at</span>
+          <span style="font-weight:600;color:#1e293b">${timeStr}</span>
+        </div>
+        ${showElev ? `
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px">
+          <span style="color:#64748b">Sun elevation</span>
+          <span style="font-weight:600;color:#1e293b">${elevStr}</span>
+        </div>` : ''}
+        <div style="margin-top:2px">
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:#64748b;margin-bottom:3px">
+            <span>View quality</span><span>${scorePct}%</span>
+          </div>
+          <div style="height:4px;background:#e2e8f0;border-radius:2px;overflow:hidden">
+            <div style="height:100%;width:${scorePct}%;background:${sideColor};border-radius:2px"></div>
+          </div>
+        </div>
+      </div>
+    </div>`;
 }
 
 // ── Find waypoint closest to an event's elapsed time ─────────────────────────
@@ -107,6 +171,7 @@ export default function MapView({
   origin,
   destination,
   verdict,
+  fillHeight = false,
 }: MapViewProps) {
   const containerRef       = useRef<HTMLDivElement>(null);
   const mapRef             = useRef<mapboxgl.Map | null>(null);
@@ -115,9 +180,10 @@ export default function MapView({
   // Ref so the map 'rotate' event handler can read the latest index without
   // a stale closure (the handler is registered once inside the init useEffect)
   const currentIndexRef    = useRef(0);
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [isPlaying,    setIsPlaying]    = useState(false);
-  const [mapReady,     setMapReady]     = useState(false);
+  const [currentIndex,  setCurrentIndex]  = useState(0);
+  const [isPlaying,     setIsPlaying]     = useState(false);
+  const [mapReady,      setMapReady]      = useState(false);
+  const [isFullscreen,  setIsFullscreen]  = useState(false);
 
   const maxIndex = waypoints.length - 1;
 
@@ -305,9 +371,8 @@ export default function MapView({
         new mapboxgl.Marker({ element: el })
           .setLngLat([wp.lon, wp.lat])
           .setPopup(
-            new mapboxgl.Popup({ offset: 16 }).setHTML(
-              `<strong>${ev.name}</strong><br/>
-               <small style="color:#94a3b8">${ev.side === 'left' ? '← Left window' : '→ Right window'}</small>`
+            new mapboxgl.Popup({ offset: 16, maxWidth: '240px' }).setHTML(
+              buildEventPopupHTML(ev)
             )
           )
           .addTo(map);
@@ -419,11 +484,36 @@ export default function MapView({
     return () => clearInterval(id);
   }, [isPlaying, maxIndex]);
 
+  // ── Resize map when fullscreen toggles (Mapbox needs explicit resize call) ──
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    const id = setTimeout(() => mapRef.current?.resize(), 50);
+    return () => clearTimeout(id);
+  }, [isFullscreen, mapReady]);
+
+  // ── Escape key exits fullscreen ───────────────────────────────────────────
+  useEffect(() => {
+    if (!isFullscreen) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setIsFullscreen(false);
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isFullscreen]);
+
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
-    <div className="w-full rounded-xl overflow-hidden border border-gray-700 flex flex-col">
+    <div
+      className={
+        isFullscreen
+          ? 'fixed inset-0 z-50 bg-black flex flex-col'
+          : fillHeight
+            ? 'h-full rounded-xl overflow-hidden flex flex-col'
+            : 'w-full rounded-xl overflow-hidden flex flex-col'
+      }
+    >
       {/* Map + Events row */}
-      <div className="flex" style={{ height: '450px' }}>
+      <div className="flex" style={isFullscreen || fillHeight ? { flex: 1 } : { height: '450px' }}>
         {/* Mapbox container */}
         <div ref={containerRef} className="flex-1 relative">
           {/* Verdict badge */}
@@ -439,6 +529,25 @@ export default function MapView({
           >
             {verdictLabel(verdict.winner)}
           </div>
+
+          {/* Fullscreen toggle button */}
+          <button
+            onClick={() => setIsFullscreen((f) => !f)}
+            className="absolute bottom-3 right-3 z-10 bg-gray-900/80 hover:bg-gray-700 text-white rounded-md p-1.5 backdrop-blur-sm border border-gray-600 transition-colors"
+            aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+          >
+            {isFullscreen ? (
+              /* Minimize — inward arrows */
+              <svg viewBox="0 0 20 20" width="16" height="16" fill="currentColor">
+                <path d="M3 8h5V3H6v3H3V8zm0 4v2h3v3h2v-5H3zm12-4V3h-2v5h5V6h-3zm0 9v-3h3v-2h-5v5h2z"/>
+              </svg>
+            ) : (
+              /* Maximize — outward arrows */
+              <svg viewBox="0 0 20 20" width="16" height="16" fill="currentColor">
+                <path d="M1 1h6v2H3v4H1V1zm12 0h6v6h-2V3h-4V1zM1 13h2v4h4v2H1v-6zm16 4h-4v2h6v-6h-2v4z"/>
+              </svg>
+            )}
+          </button>
         </div>
 
         {/* Events side panel */}

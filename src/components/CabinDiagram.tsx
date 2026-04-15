@@ -70,10 +70,8 @@ export default function CabinDiagram({ winner }: CabinDiagramProps) {
 
       <svg
         viewBox={`0 0 ${SVG_W} ${SVG_H}`}
-        width={SVG_W}
-        height={SVG_H}
         aria-label="Overhead cabin diagram"
-        className="max-w-full"
+        className="w-full h-auto max-w-xs"
       >
         {/* ── Fuselage outline ─────────────────────────────────────────────── */}
         <path
@@ -201,30 +199,6 @@ export default function CabinDiagram({ winner }: CabinDiagramProps) {
         </text>
       </svg>
 
-      {/* ── Legend ───────────────────────────────────────────────────────────── */}
-      <div className="flex items-center gap-5 text-xs text-gray-400">
-        <span className="flex items-center gap-1.5">
-          <span
-            className="inline-block w-3 h-3 rounded-sm"
-            style={{ background: winner === 'right' ? '#1f2937' : '#1d4ed8', border: '1px solid #60a5fa' }}
-          />
-          A / B / C — Left window
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span
-            className="inline-block w-3 h-3 rounded-sm"
-            style={{ background: '#374151', border: '1px solid #4b5563' }}
-          />
-          D–G — Middle
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span
-            className="inline-block w-3 h-3 rounded-sm"
-            style={{ background: winner === 'left' ? '#1f2937' : '#4338ca', border: '1px solid #818cf8' }}
-          />
-          J / K / L — Right window
-        </span>
-      </div>
     </div>
   );
 }

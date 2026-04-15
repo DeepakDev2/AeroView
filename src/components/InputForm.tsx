@@ -24,7 +24,7 @@ interface InputFormProps {
 
 const DEFAULT_PREFS: UserPreferences = {
   weights: { sunrise: 1, sunset: 1, landscape: 1, avoidSun: 0 },
-  isOvercast: false,
+  isOvercast: false, // always clear — UI toggle removed
 };
 
 const WEIGHT_LABELS: Record<keyof UserPreferences['weights'], string> = {
@@ -409,7 +409,12 @@ export default function InputForm({
 
       {/* Preference sliders */}
       <div className="flex flex-col gap-3">
-        <p className="text-sm font-medium text-gray-300">View preferences</p>
+        <div className="flex flex-col gap-1">
+          <p className="text-sm font-medium text-gray-300">View preferences</p>
+          <p className="text-xs text-gray-500">
+            Positive — want to see it &nbsp;·&nbsp; 0 — don't care &nbsp;·&nbsp; Negative — want to avoid it
+          </p>
+        </div>
         {(Object.keys(WEIGHT_LABELS) as Array<keyof UserPreferences['weights']>).map((key) => (
           <div key={key} className="flex items-center gap-3">
             <span className="text-sm text-gray-400 w-32">{WEIGHT_LABELS[key]}</span>
@@ -436,19 +441,6 @@ export default function InputForm({
           </p>
         )}
 
-        {/* Overcast toggle */}
-        <label className="flex items-center gap-3 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={preferences.isOvercast}
-            onChange={(e) =>
-              setPreferences((p) => ({ ...p, isOvercast: e.target.checked }))
-            }
-            className="w-4 h-4 accent-blue-400"
-            aria-label="Overcast sky"
-          />
-          <span className="text-sm text-gray-400">Overcast sky (reduces visibility scores by 80%)</span>
-        </label>
       </div>
 
       {/* Submit */}

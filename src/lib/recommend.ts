@@ -8,7 +8,7 @@
 import { elevationMultiplier } from './solar';
 import {
   WEATHER_CLEAR_FACTOR,
-  WEATHER_OVERCAST_FACTOR,
+
   LOW_CONFIDENCE_THRESHOLD,
   POI_RADIUS_KM,
 } from './constants';
@@ -50,9 +50,7 @@ export function scoreSolarEvent(
     type === 'sunrise'
       ? preferences.weights.sunrise
       : preferences.weights.sunset;
-  const weatherFactor = preferences.isOvercast
-    ? WEATHER_OVERCAST_FACTOR
-    : WEATHER_CLEAR_FACTOR;
+  const weatherFactor = WEATHER_CLEAR_FACTOR;
   return weight * elevationMultiplier(solarElevDeg) * weatherFactor;
 }
 
@@ -67,9 +65,7 @@ export function scoreLandmark(
   distanceKm: number,
   preferences: UserPreferences
 ): number {
-  const weatherFactor = preferences.isOvercast
-    ? WEATHER_OVERCAST_FACTOR
-    : WEATHER_CLEAR_FACTOR;
+  const weatherFactor = WEATHER_CLEAR_FACTOR;
   return (
     preferences.weights.landscape *
     (1 - distanceKm / POI_RADIUS_KM) *
@@ -101,9 +97,7 @@ export function computeVerdict(
   const seenPoiIds = new Set<string>(); // dedup: one event per unique POI
 
   const departureMs = waypoints[0]?.utcTime.getTime() ?? 0;
-  const weatherFactor = preferences.isOvercast
-    ? WEATHER_OVERCAST_FACTOR
-    : WEATHER_CLEAR_FACTOR;
+  const weatherFactor = WEATHER_CLEAR_FACTOR;
 
   for (const wp of waypoints) {
     const timeMinFromDeparture =

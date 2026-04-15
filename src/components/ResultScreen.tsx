@@ -12,9 +12,8 @@ import dynamic from 'next/dynamic';
 import SeatBadge from './SeatBadge';
 import CabinDiagram from './CabinDiagram';
 import EventList from './EventList';
-import WindowMockup from './WindowMockup';
 import NarrativeCard from './NarrativeCard';
-import type { FlightInput, WaypointData, SeatVerdict, ScoredEvent } from '@/types';
+import type { FlightInput, WaypointData, SeatVerdict } from '@/types';
 
 // Leaflet must not SSR
 const MapView = dynamic(() => import('./MapView'), {
@@ -33,10 +32,6 @@ interface ResultScreenProps {
   onReset: () => void;
 }
 
-function topEvent(events: ScoredEvent[]): ScoredEvent | null {
-  if (events.length === 0) return null;
-  return events.reduce((best, ev) => (ev.score > best.score ? ev : best));
-}
 
 /** Format total minutes as "6h 12m" (or "6h" when minutes are 0). */
 function formatDuration(totalMin: number): string {
@@ -66,12 +61,12 @@ export default function ResultScreen({
   );
 
   return (
-    <div className="flex flex-col gap-6 w-full max-w-2xl mx-auto">
+    <div className="fixed inset-0 z-10 flex flex-col overflow-hidden bg-gray-900">
 
-      {/* Header — recap bar */}
-      <div className="flex items-center justify-between">
+      {/* ── Header bar ─────────────────────────────────────────────────────── */}
+      <div className="flex-shrink-0 flex items-center justify-between px-5 py-3">
         <div>
-          <h2 className="text-lg font-bold text-white">
+          <h2 className="text-lg font-bold text-white leading-tight">
             {origin.iata} → {destination.iata}
           </h2>
           <p className="text-xs text-gray-400 mt-0.5">
@@ -87,51 +82,52 @@ export default function ResultScreen({
         </button>
       </div>
 
-      {/* Seat badge */}
-      <SeatBadge
-        winner={verdict.winner}
-        confidence={verdict.confidence}
-        leftScore={verdict.leftScore}
-        rightScore={verdict.rightScore}
-      />
+      {/* ── Body ───────────────────────────────────────────────────────────── */}
+      <div className="flex flex-1 overflow-hidden gap-5 px-5 pb-5">
 
-      {/* Cabin overhead diagram */}
-      <CabinDiagram winner={verdict.winner} />
+        {/* ── Left panel — Cabin Overview + Events + Narrative ────────────── */}
+        <div className="w-[38%] flex-shrink-0 flex flex-col gap-5 overflow-y-auto
+          [&::-webkit-scrollbar]:w-1
+          [&::-webkit-scrollbar-track]:bg-transparent
+          [&::-webkit-scrollbar-thumb]:bg-gray-700
+          [&::-webkit-scrollbar-thumb]:rounded-full
+          [&::-webkit-scrollbar-thumb:hover]:bg-gray-500">
 
-      {/* Window mockups */}
-      <div className="flex justify-center gap-12">
-        <WindowMockup
-          side={verdict.winner === 'left' ? 'left' : 'either'}
-          topEvent={topEvent(verdict.leftEvents)}
-        />
-        <WindowMockup
-          side={verdict.winner === 'right' ? 'right' : 'either'}
-          topEvent={topEvent(verdict.rightEvents)}
-        />
+          <SeatBadge
+            winner={verdict.winner}
+            confidence={verdict.confidence}
+            leftScore={verdict.leftScore}
+            rightScore={verdict.rightScore}
+          />
+
+          <CabinDiagram winner={verdict.winner} />
+
+          <div className="grid grid-cols-2 gap-3">
+            <EventList events={verdict.leftEvents} side="left" />
+            <EventList events={verdict.rightEvents} side="right" />
+          </div>
+
+          <NarrativeCard
+            verdict={verdict}
+            origin={origin}
+            destination={destination}
+            departureUTC={departureUTC}
+          />
+
+        </div>
+
+        {/* ── Right column — Map only ──────────────────────────────────────── */}
+        <div className="flex-1 min-w-0">
+          <MapView
+            waypoints={waypoints}
+            origin={origin}
+            destination={destination}
+            verdict={verdict}
+            fillHeight
+          />
+        </div>
+
       </div>
-
-      {/* Event lists */}
-      <div className="grid grid-cols-2 gap-4">
-        <EventList events={verdict.leftEvents} side="left" />
-        <EventList events={verdict.rightEvents} side="right" />
-      </div>
-
-      {/* Map — MapView is self-contained with its own height */}
-      <MapView
-        waypoints={waypoints}
-        origin={origin}
-        destination={destination}
-        verdict={verdict}
-      />
-
-      {/* LLM Narrative */}
-      <NarrativeCard
-        verdict={verdict}
-        origin={origin}
-        destination={destination}
-        departureUTC={departureUTC}
-      />
-
     </div>
   );
 }
