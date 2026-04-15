@@ -180,10 +180,12 @@ export default function MapView({
   // Ref so the map 'rotate' event handler can read the latest index without
   // a stale closure (the handler is registered once inside the init useEffect)
   const currentIndexRef    = useRef(0);
+  const trackPlaneRef      = useRef(true);
   const [currentIndex,  setCurrentIndex]  = useState(0);
   const [isPlaying,     setIsPlaying]     = useState(false);
   const [mapReady,      setMapReady]      = useState(false);
   const [isFullscreen,  setIsFullscreen]  = useState(false);
+  const [trackPlane,    setTrackPlane]    = useState(true);
 
   const maxIndex = waypoints.length - 1;
 
@@ -470,6 +472,11 @@ export default function MapView({
       const { lat: sunLat, lon: sunLon } = getSubSolarPoint(wp.utcTime);
       sunMarkerRef.current.setLngLat([sunLon, sunLat]);
     }
+
+    // Pan map to keep plane centred when tracking is on
+    if (trackPlaneRef.current) {
+      map.easeTo({ center: [wp.lon, wp.lat], duration: 200 });
+    }
   }, [currentIndex, mapReady, waypoints]);
 
   // ── Auto-play animation ────────────────────────────────────────────────────
@@ -490,6 +497,20 @@ export default function MapView({
     const id = setTimeout(() => mapRef.current?.resize(), 50);
     return () => clearTimeout(id);
   }, [isFullscreen, mapReady]);
+
+  // ── Keep trackPlaneRef in sync with state ────────────────────────────────
+  useEffect(() => {
+    trackPlaneRef.current = trackPlane;
+  }, [trackPlane]);
+
+  // ── Disable tracking when user manually pans/rotates the map ─────────────
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    const map = mapRef.current;
+    function onDragStart() { setTrackPlane(false); }
+    map.on('dragstart', onDragStart);
+    return () => { map.off('dragstart', onDragStart); };
+  }, [mapReady]);
 
   // ── Escape key exits fullscreen ───────────────────────────────────────────
   useEffect(() => {
@@ -529,6 +550,27 @@ export default function MapView({
           >
             {verdictLabel(verdict.winner)}
           </div>
+
+          {/* Track-plane toggle button */}
+          <button
+            onClick={() => setTrackPlane((t) => !t)}
+            className={`
+              absolute bottom-3 right-12 z-10 rounded-md p-1.5 backdrop-blur-sm border transition-colors text-white text-xs font-semibold flex items-center gap-1.5
+              ${trackPlane
+                ? 'bg-blue-600/90 border-blue-400 hover:bg-blue-500'
+                : 'bg-gray-900/80 border-gray-600 hover:bg-gray-700'}
+            `}
+            aria-label={trackPlane ? 'Stop tracking plane' : 'Track plane'}
+            title={trackPlane ? 'Tracking plane — click to free camera' : 'Free camera — click to track plane'}
+          >
+            {/* Crosshair / target icon */}
+            <svg viewBox="0 0 20 20" width="14" height="14" fill="currentColor">
+              <circle cx="10" cy="10" r="2"/>
+              <path d="M10 1v3M10 16v3M1 10h3M16 10h3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+              <circle cx="10" cy="10" r="6" fill="none" stroke="currentColor" strokeWidth="1.4"/>
+            </svg>
+            {trackPlane ? 'Tracking' : 'Free'}
+          </button>
 
           {/* Fullscreen toggle button */}
           <button
